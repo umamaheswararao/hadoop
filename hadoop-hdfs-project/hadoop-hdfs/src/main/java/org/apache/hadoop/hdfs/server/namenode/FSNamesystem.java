@@ -2101,6 +2101,21 @@ public class FSNamesystem implements Namesystem, FSNamesystemMBean,
     }
   }
 
+  public void satisfyStoragePolicy(String src) throws IOException {
+    checkOperation(OperationCategory.WRITE);
+    writeLock();
+    try {
+      checkOperation(OperationCategory.WRITE);
+      checkNameNodeSafeMode("Cannot set storage policy for " + src);
+      FSDirAttrOp.satisfyStoragePolicy(dir, blockManager, src);
+      // TODO: Need to persist
+    } finally {
+      writeUnlock();
+    }
+    // getEditLog().logSync();
+    // logAuditEvent(true, "setStoragePolicy", src, null, null);
+  }
+
   long getPreferredBlockSize(String src) throws IOException {
     checkOperation(OperationCategory.READ);
     readLock();

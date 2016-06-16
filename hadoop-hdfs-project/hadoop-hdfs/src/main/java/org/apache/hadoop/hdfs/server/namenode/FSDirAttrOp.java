@@ -178,6 +178,17 @@ public class FSDirAttrOp {
     return setStoragePolicy(fsd, bm, src, policy.getId(), "set");
   }
 
+  static void satisfyStoragePolicy(FSDirectory fsd, BlockManager bm, String src)
+      throws IOException {
+    // fsdlock
+    // get the corresponding policy and make sure the policy name is valid
+    INodesInPath iip = fsd.getINodesInPath4Write(FSDirectory.normalizePath(src),
+        true);
+    INode inode = FSDirectory.resolveLastINode(iip);
+    // return setStoragePolicy(fsd, bm, src, policy.getId(), "set");
+    bm.satisfyStoragePolicy(inode.getId());
+  }
+
   static HdfsFileStatus setStoragePolicy(FSDirectory fsd, BlockManager bm,
       String src, final byte policyId, final String operation)
       throws IOException {

@@ -83,6 +83,8 @@ import org.apache.hadoop.hdfs.server.namenode.CachedBlock;
 import org.apache.hadoop.hdfs.server.namenode.INode.BlocksMapUpdateInfo;
 import org.apache.hadoop.hdfs.server.namenode.NameNode;
 import org.apache.hadoop.hdfs.server.namenode.Namesystem;
+import org.apache.hadoop.hdfs.server.namenode.StoragePolicySatisfier;
+import org.apache.hadoop.hdfs.server.namenode.UnSatisfiedStoragePolicyFiles;
 import org.apache.hadoop.hdfs.server.namenode.ha.HAContext;
 import org.apache.hadoop.hdfs.server.namenode.metrics.NameNodeMetrics;
 import org.apache.hadoop.hdfs.server.protocol.BlockCommand;
@@ -156,6 +158,8 @@ public class BlockManager implements BlockStatsMXBean {
 
   /** flag indicating whether replication queues have been initialized */
   private boolean initializedReplQueues;
+
+  private UnSatisfiedStoragePolicyFiles unSatisfiedStoragePloicyFiles;
 
   private final AtomicLong postponedMisreplicatedBlocksCount = new AtomicLong(0L);
   private final long startupDelayBlockDeletionInMs;
@@ -336,6 +340,10 @@ public class BlockManager implements BlockStatsMXBean {
   private boolean hasNonEcBlockUsingStripedID = false;
 
   private final BlockIdManager blockIdManager;
+  private Daemon storagePolicySatisfierThread = null;
+
+  @VisibleForTesting
+  public StoragePolicySatisfier sps;
 
   public BlockManager(final Namesystem namesystem, boolean haEnabled,
       final Configuration conf) throws IOException {
@@ -359,6 +367,11 @@ public class BlockManager implements BlockStatsMXBean {
       datanodeManager.getNetworkTopology(),
       datanodeManager.getHost2DatanodeMap());
     storagePolicySuite = BlockStoragePolicySuite.createDefaultSuite();
+
+    unSatisfiedStoragePloicyFiles = new UnSatisfiedStoragePolicyFiles();
+    sps = new StoragePolicySatisfier(namesystem, conf, this,
+        unSatisfiedStoragePloicyFiles);
+    storagePolicySatisfierThread = new Daemon(sps);
     pendingReconstruction = new PendingReconstructionBlocks(conf.getInt(
         DFSConfigKeys.DFS_NAMENODE_RECONSTRUCTION_PENDING_TIMEOUT_SEC_KEY,
         DFSConfigKeys.DFS_NAMENODE_RECONSTRUCTION_PENDING_TIMEOUT_SEC_DEFAULT)
@@ -556,6 +569,8 @@ public class BlockManager implements BlockStatsMXBean {
     this.replicationThread.start();
     storageInfoDefragmenterThread.setName("StorageInfoMonitor");
     storageInfoDefragmenterThread.start();
+    storagePolicySatisfierThread.setName("StoragePolicySatisfier");
+    storagePolicySatisfierThread.start();
     this.blockReportThread.start();
     mxBeanName = MBeans.register("NameNode", "BlockStats", this);
     bmSafeMode.activate(blockTotal);
@@ -570,6 +585,8 @@ public class BlockManager implements BlockStatsMXBean {
       replicationThread.join(3000);
       storageInfoDefragmenterThread.join(3000);
       blockReportThread.join(3000);
+      storagePolicySatisfierThread.interrupt();
+      storagePolicySatisfierThread.join(3000);
     } catch (InterruptedException ie) {
     }
     datanodeManager.close();
@@ -4575,5 +4592,9 @@ public class BlockManager implements BlockStatsMXBean {
 
   boolean isGenStampInFuture(Block block) {
     return blockIdManager.isGenStampInFuture(block);
+  }
+
+  public void satisfyStoragePolicy(long inodeID) {
+    unSatisfiedStoragePloicyFiles.add(inodeID);
   }
 }
