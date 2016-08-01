@@ -45,6 +45,7 @@ import org.apache.hadoop.hdfs.server.protocol.*;
 import org.apache.hadoop.hdfs.server.protocol.BlockECReconstructionCommand.BlockECReconstructionInfo;
 import org.apache.hadoop.hdfs.server.protocol.BlockRecoveryCommand.RecoveringBlock;
 import org.apache.hadoop.hdfs.server.protocol.BlockRecoveryCommand.RecoveringStripedBlock;
+import org.apache.hadoop.hdfs.server.protocol.StoragePolicySatisfyMovementCommand.BlockToMoveStoragePair;
 import org.apache.hadoop.ipc.Server;
 import org.apache.hadoop.net.*;
 import org.apache.hadoop.net.NetworkTopology.InvalidTopologyException;
@@ -1561,6 +1562,16 @@ public class DatanodeManager {
       cmds.add(new BlockECReconstructionCommand(
           DNA_ERASURE_CODING_RECONSTRUCTION, pendingECList));
     }
+
+    // TODO: add pending storage policy movement tasks
+    List<BlockToMoveStoragePair> pendingStoragePolicyMoveList =
+        new ArrayList<>();
+    if (pendingStoragePolicyMoveList != null) {
+      cmds.add(new StoragePolicySatisfyMovementCommand(
+          DatanodeProtocol.DNA_STORAGE_POLICY_SATISFY_MOVEMENT,
+          pendingStoragePolicyMoveList));
+    }
+
     // check block invalidation
     Block[] blks = nodeinfo.getInvalidateBlocks(blockInvalidateLimit);
     if (blks != null) {

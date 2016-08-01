@@ -33,7 +33,7 @@ import org.apache.hadoop.hdfs.protocolPB.DatanodeProtocolClientSideTranslatorPB;
 import org.apache.hadoop.hdfs.server.protocol.*;
 import org.apache.hadoop.hdfs.server.protocol.BlockECReconstructionCommand.BlockECReconstructionInfo;
 import org.apache.hadoop.hdfs.server.protocol.ReceivedDeletedBlockInfo.BlockStatus;
-
+import org.apache.hadoop.hdfs.server.protocol.StoragePolicySatisfyMovementCommand.BlockToMoveStoragePair;
 import org.slf4j.Logger;
 
 import java.io.IOException;
@@ -732,6 +732,13 @@ class BPOfferService {
           ((BlockECReconstructionCommand) cmd).getECTasks();
       dn.getErasureCodingWorker().processErasureCodingTasks(ecTasks);
       break;
+    case DatanodeProtocol.DNA_STORAGE_POLICY_SATISFY_MOVEMENT:
+      LOG.info("DatanodeCommand action: DNA_STORAGE_POLICY_SATISFY_MOVEMENT");
+      Collection<BlockToMoveStoragePair> blockToMoveStorageTasks =
+          ((StoragePolicySatisfyMovementCommand) cmd).getBlockToMoveStorageTasks();
+      dn.getStoragePolicySatisfyWorker()
+          .processBlockToMoveStorageTasks(blockToMoveStorageTasks);
+      break;
     default:
       LOG.warn("Unknown DatanodeCommand action: " + cmd.getAction());
     }
@@ -762,6 +769,7 @@ class BPOfferService {
     case DatanodeProtocol.DNA_CACHE:
     case DatanodeProtocol.DNA_UNCACHE:
     case DatanodeProtocol.DNA_ERASURE_CODING_RECONSTRUCTION:
+    case DatanodeProtocol.DNA_STORAGE_POLICY_SATISFY_MOVEMENT:
       LOG.warn("Got a command from standby NN - ignoring command:" + cmd.getAction());
       break;
     default:
