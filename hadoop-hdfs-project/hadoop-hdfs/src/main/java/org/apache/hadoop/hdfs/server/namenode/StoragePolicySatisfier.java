@@ -1,6 +1,8 @@
 package org.apache.hadoop.hdfs.server.namenode;
 
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.EnumMap;
 import java.util.Iterator;
 import java.util.LinkedList;
@@ -11,12 +13,15 @@ import org.apache.hadoop.fs.StorageType;
 import org.apache.hadoop.hdfs.protocol.Block;
 import org.apache.hadoop.hdfs.protocol.BlockStoragePolicy;
 import org.apache.hadoop.hdfs.protocol.HdfsConstants.DatanodeReportType;
+import org.apache.hadoop.hdfs.server.balancer.Matcher;
 import org.apache.hadoop.hdfs.server.blockmanagement.BlockCollection;
 import org.apache.hadoop.hdfs.server.blockmanagement.BlockInfo;
 import org.apache.hadoop.hdfs.server.blockmanagement.BlockManager;
+import org.apache.hadoop.hdfs.server.blockmanagement.BlockSourceTargetNodePair;
 import org.apache.hadoop.hdfs.server.blockmanagement.DatanodeDescriptor;
 import org.apache.hadoop.hdfs.server.blockmanagement.DatanodeStorageInfo;
 import org.apache.hadoop.hdfs.server.protocol.StorageReport;
+import org.apache.hadoop.util.Daemon;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -25,11 +30,13 @@ import com.google.common.annotations.VisibleForTesting;
 public class StoragePolicySatisfier implements Runnable {
   public static final Logger LOG = LoggerFactory
       .getLogger(StoragePolicySatisfier.class);
+  private Daemon storagePolicySatisfierThread = null;
 
   private Namesystem namesystem;
   private Configuration conf;
 
-  private UnSatisfiedStoragePolicyFiles unSatisfiedStoragePloicyFiles;
+  private UnSatisfiedStoragePolicyFiles unSatisfiedStoragePolicyFiles;
+  private StorageMovementAttemptedItems storageMovementAttemptedItems;
 
   private BlockManager blockManager;
 
@@ -37,20 +44,40 @@ public class StoragePolicySatisfier implements Runnable {
   public List<BlockInfoToMoveStorage> storageMismatchedBlocks;
 
   public StoragePolicySatisfier(final Namesystem namesystem,
-      final Configuration conf, BlockManager blkManager,
-      UnSatisfiedStoragePolicyFiles unSatisfiedStoragePloicyFiles) {
+      final Configuration conf, BlockManager blkManager) {
     this.namesystem = namesystem;
     this.blockManager = blkManager;
     this.conf = conf;
-    this.unSatisfiedStoragePloicyFiles = unSatisfiedStoragePloicyFiles;
+    unSatisfiedStoragePolicyFiles = new UnSatisfiedStoragePolicyFiles();
+    this.storageMovementAttemptedItems = new StorageMovementAttemptedItems(10,
+        unSatisfiedStoragePolicyFiles);
+  }
+
+  public void start() {
+    storagePolicySatisfierThread = new Daemon(this);
+    storagePolicySatisfierThread.setName("StoragePolicySatisfier");
+    storagePolicySatisfierThread.start();
+    this.storageMovementAttemptedItems.start();
+  }
+
+  public void stop() throws InterruptedException {
+    this.storageMovementAttemptedItems.stop();
+    storagePolicySatisfierThread.interrupt();
+    storagePolicySatisfierThread.join(3000);
   }
 
   @Override
   public void run() {
     while (namesystem.isRunning()) {
       try {
-        List<BlockInfoToMoveStorage> storageMismatchedBlocks = getStorageMismatchedBlocks();
-        satisfyBlockStorageLocations(storageMismatchedBlocks);
+        Long id = unSatisfiedStoragePolicyFiles.get();
+        List<BlockInfoToMoveStorage> storageMismatchedBlocks = getStorageMismatchedBlocks(
+            id);
+        if (storageMismatchedBlocks != null) {
+          distributeBlockStorageMovementTasks(id, storageMismatchedBlocks);
+        }
+        // Adding as attempted for movement
+        storageMovementAttemptedItems.add(id);
         Thread.sleep(3000);
       } catch (Throwable t) {
         if (!namesystem.isRunning()) {
@@ -68,14 +95,24 @@ public class StoragePolicySatisfier implements Runnable {
     }
   }
 
-  private void satisfyBlockStorageLocations(
+  private void distributeBlockStorageMovementTasks(long trackID,
       List<BlockInfoToMoveStorage> storageMismatchedBlocks) {
-    this.storageMismatchedBlocks = storageMismatchedBlocks;
-    // Find source node and assign as commands
+    this.storageMismatchedBlocks = storageMismatchedBlocks;// TODO: this is just
+                                                           // for test
+    if (storageMismatchedBlocks.size() < 1) {
+      return;// TODO: Major: handle this case. I think we need rerty num case to
+             // be integrated.
+      // Idea is, if some files are not getting storagemovement chances, then we
+      // can just retry limited number of times and exit.
+    }
+    DatanodeDescriptor coordinatorNode = storageMismatchedBlocks
+        .get(0).sourceNodes[0];
+    coordinatorNode.addBlocksToMoveStorage(
+        new BlockInfoToMoveStorageBatch(storageMismatchedBlocks));
   }
 
-  private List<BlockInfoToMoveStorage> getStorageMismatchedBlocks() {
-    Long inodeID = unSatisfiedStoragePloicyFiles.get();
+  private List<BlockInfoToMoveStorage> getStorageMismatchedBlocks(
+      long inodeID) {
     BlockCollection blockCollection = namesystem.getBlockCollection(inodeID);
     if (blockCollection == null) {
       return null;
@@ -90,36 +127,168 @@ public class StoragePolicySatisfier implements Runnable {
     }
 
     BlockInfo[] blocks = blockCollection.getBlocks();
-    BlockInfoToMoveStorage[] blockInfoToMoveStorage = new BlockInfoToMoveStorage[blocks.length];
+    List<BlockInfoToMoveStorage> blockInfoToMoveStorages = new ArrayList<BlockInfoToMoveStorage>();
     for (int i = 0; i < blocks.length; i++) {
       BlockInfo blockInfo = blocks[i];
       List<StorageType> newTypes = existingStoragePolicy
-          .chooseStorageTypes((short) blocks.length);
+          .chooseStorageTypes(blockInfo.getReplication());
       DatanodeStorageInfo[] storages = blockManager.getStorages(blockInfo);
       StorageType storageTypes[] = new StorageType[storages.length];
-      StorageTypeNodeMap sourceWithStorageMap = new StorageTypeNodeMap();
       for (int j = 0; j < storages.length; j++) {
         DatanodeStorageInfo datanodeStorageInfo = storages[j];
         StorageType storageType = datanodeStorageInfo.getStorageType();
         storageTypes[j] = storageType;
-        sourceWithStorageMap.add(storageType,
-            datanodeStorageInfo.getDatanodeDescriptor());
       }
       final StorageTypeDiff diff = new StorageTypeDiff(newTypes, storageTypes);
       if (!diff.removeOverlap(true)) {
-        blockInfoToMoveStorage[i] = new BlockInfoToMoveStorage();
-        blockInfoToMoveStorage[i].addBlock(blockInfo);
-        // blockInfoToMoveStorage[i].setExpectedStorageTypes(diff.expected);
-        // blockInfoToMoveStorage[i].setExistingStorageTypes(diff.existing);
+        List<StorageTypeNodePair> sourceWithStorageMap = new ArrayList<StorageTypeNodePair>();
+        List<DatanodeStorageInfo> existingBlockStorages = new ArrayList<DatanodeStorageInfo>(
+            Arrays.asList(storages));
+        for (StorageType existingType : diff.existing) {
+          Iterator<DatanodeStorageInfo> iterator = existingBlockStorages
+              .iterator();
+          while (iterator.hasNext()) {
+            DatanodeStorageInfo datanodeStorageInfo = iterator.next();
+            StorageType storageType = datanodeStorageInfo.getStorageType();
+            if (storageType == existingType) {
+              iterator.remove();
+              sourceWithStorageMap.add(new StorageTypeNodePair(storageType,
+                  datanodeStorageInfo.getDatanodeDescriptor()));
+              break;
+            }
+          }
+        }
+
+        BlockInfoToMoveStorage blkInfoToMoveStorage = new BlockInfoToMoveStorage();
+        blkInfoToMoveStorage.addBlock(blockInfo);
         StorageTypeNodeMap locsForExpectedStorageTypes = getTargetLocsForExpectedStorageTypes(
             diff.expected);
-        blockInfoToMoveStorage[i]
-            .setTargetsLocsForExpectedStorages(locsForExpectedStorageTypes);
-        blockInfoToMoveStorage[i]
-            .setSourceLocForExistingStorages(sourceWithStorageMap);
+
+        List<BlockSourceTargetNodePair> blockSourceTargetNodePairs = buildSourceAndTaregtMapping(
+            blockInfo, diff.existing, sourceWithStorageMap, diff.expected,
+            locsForExpectedStorageTypes);
+        blkInfoToMoveStorage.addBlocksToMoveStorage(blockSourceTargetNodePairs);
+
+        blockInfoToMoveStorages.add(blkInfoToMoveStorage);
       }
     }
-    return Arrays.asList(blockInfoToMoveStorage);
+    return blockInfoToMoveStorages;
+  }
+
+  /**
+   * Find the good target node for each source node which was misplaced in wrong
+   * storage.
+   * 
+   * @param blockInfo
+   * @param existing
+   * @param sourceWithStorageList
+   * @param expected
+   * @param locsForExpectedStorageTypes
+   * @return
+   */
+  private List<BlockSourceTargetNodePair> buildSourceAndTaregtMapping(
+      BlockInfo blockInfo, List<StorageType> existing,
+      List<StorageTypeNodePair> sourceWithStorageList,
+      List<StorageType> expected,
+      StorageTypeNodeMap locsForExpectedStorageTypes) {
+    List<BlockSourceTargetNodePair> sourceTargetNodePairList = new ArrayList<>();
+    List<DatanodeDescriptor> chosenNodes = new ArrayList<>();
+    for (StorageTypeNodePair existingTypeNodePair : sourceWithStorageList) {
+      StorageTypeNodePair chosenTarget = chooseTargetTypeInSameNode(
+          existingTypeNodePair.dn, expected, locsForExpectedStorageTypes,
+          chosenNodes);
+
+      if (chosenTarget == null && blockManager.getDatanodeManager()
+          .getNetworkTopology().isNodeGroupAware()) {
+        chosenTarget = chooseTarget(blockInfo, existingTypeNodePair.dn,
+            expected, Matcher.SAME_NODE_GROUP, locsForExpectedStorageTypes,
+            chosenNodes);
+      }
+
+      // Then, match nodes on the same rack
+      if (chosenTarget == null) {
+        chosenTarget = chooseTarget(blockInfo, existingTypeNodePair.dn,
+            expected, Matcher.SAME_RACK, locsForExpectedStorageTypes,
+            chosenNodes);
+      }
+
+      if (chosenTarget == null) {
+        chosenTarget = chooseTarget(blockInfo, existingTypeNodePair.dn,
+            expected, Matcher.ANY_OTHER, locsForExpectedStorageTypes,
+            chosenNodes);
+      }
+      if (null != chosenTarget) {
+        sourceTargetNodePairList.add(new BlockSourceTargetNodePair(
+            existingTypeNodePair.dn, existingTypeNodePair.storageType,
+            chosenTarget.dn, chosenTarget.storageType));
+        chosenNodes.add(chosenTarget.dn);
+        // TODO: check wether this is right place
+        chosenTarget.dn.incrementBlocksScheduled(chosenTarget.storageType);
+      } else {
+        // TODO: Failed to ChooseTargetNodes...So let just retry. Shall we
+        // proceed without this targets? Then what should be final result?
+        // How about pack emty target, means target node could not be chosen ,
+        // so result should be RETRY_REQUIRED from DN always.
+        // Log..unable to choose target node for source datanodeDescriptor
+        sourceTargetNodePairList
+            .add(new BlockSourceTargetNodePair(existingTypeNodePair.dn,
+                existingTypeNodePair.storageType, null, null));
+      }
+    }
+
+    return sourceTargetNodePairList;
+
+  }
+
+  /**
+   * Choose the target storage within same Datanode if possible.
+   * 
+   * @param locsForExpectedStorageTypes
+   * @param chosenNodes
+   */
+  StorageTypeNodePair chooseTargetTypeInSameNode(DatanodeDescriptor source,
+      List<StorageType> targetTypes,
+      StorageTypeNodeMap locsForExpectedStorageTypes,
+      List<DatanodeDescriptor> chosenNodes) {
+    for (StorageType t : targetTypes) {
+      DatanodeStorageInfo chooseStorage4Block = source.chooseStorage4Block(t,
+          0);
+      if (chooseStorage4Block != null) {
+        return new StorageTypeNodePair(t, source);
+      }
+    }
+    return null;
+  }
+
+  StorageTypeNodePair chooseTarget(Block block, DatanodeDescriptor source,
+      List<StorageType> targetTypes, Matcher matcher,
+      StorageTypeNodeMap locsForExpectedStorageTypes,
+      List<DatanodeDescriptor> chosenNodes) {
+    for (StorageType t : targetTypes) {
+      List<DatanodeDescriptor> nodesWithStorages = locsForExpectedStorageTypes
+          .getNodesWithStorages(t);
+      Collections.shuffle(nodesWithStorages);
+      for (DatanodeDescriptor target : nodesWithStorages) {
+        if (!chosenNodes.contains(target) && matcher.match(
+            blockManager.getDatanodeManager().getNetworkTopology(), source,
+            target)) {
+          if (null != target.chooseStorage4Block(t, block.getNumBytes())) {
+            return new StorageTypeNodePair(t, target);
+          }
+        }
+      }
+    }
+    return null;
+  }
+
+  class StorageTypeNodePair {
+    public StorageType storageType = null;
+    public DatanodeDescriptor dn = null;
+
+    public StorageTypeNodePair(StorageType storageType, DatanodeDescriptor dn) {
+      this.storageType = storageType;
+      this.dn = dn;
+    }
   }
 
   private StorageTypeNodeMap getTargetLocsForExpectedStorageTypes(
@@ -156,7 +325,8 @@ public class StoragePolicySatisfier implements Runnable {
   }
 
   @VisibleForTesting
-  // NOTE: copied from Mover.
+  // TODO: move this class to util package and use it here and in mover as this
+  // one is copied from there for now.
   static class StorageTypeDiff {
     final List<StorageType> expected;
     final List<StorageType> existing;
@@ -206,7 +376,8 @@ public class StoragePolicySatisfier implements Runnable {
     }
   }
 
-  private static class StorageTypeNodeMap {
+  // TODO: similar data structures are there in Mover. make it refined later.
+  static class StorageTypeNodeMap {
     private final EnumMap<StorageType, List<DatanodeDescriptor>> nodeStorageTypeMap = new EnumMap<StorageType, List<DatanodeDescriptor>>(
         StorageType.class);
 
@@ -222,44 +393,72 @@ public class StoragePolicySatisfier implements Runnable {
       }
     }
 
-    private List<DatanodeDescriptor> getNodesWithStorages(StorageType type) {
+    List<DatanodeDescriptor> getNodesWithStorages(StorageType type) {
       return nodeStorageTypeMap.get(type);
     }
   }
 
   public class BlockInfoToMoveStorage {
-
     private Block blk;
-    private StorageTypeNodeMap locsForExpectedStorageTypes;
-    private StorageTypeNodeMap sourceWithStorageMap;
+    public DatanodeDescriptor sourceNodes[];
+    public StorageType sourceStorageTypes[];
+    public DatanodeDescriptor targetNodes[];
+    public StorageType targetStorageTypes[];
 
     public void addBlock(Block block) {
       this.blk = block;
-    }
-
-    public void setSourceLocForExistingStorages(
-        StorageTypeNodeMap sourceWithStorageMap) {
-      this.sourceWithStorageMap = sourceWithStorageMap;
-    }
-
-    public StorageTypeNodeMap getSourceLocForExistingStorages() {
-      return this.sourceWithStorageMap;
     }
 
     public Block getBlock() {
       return this.blk;
     }
 
-    public void setTargetsLocsForExpectedStorages(
-        StorageTypeNodeMap locsForExpectedStorageTypes) {
-      this.locsForExpectedStorageTypes = locsForExpectedStorageTypes;
+    public void addBlocksToMoveStorage(
+        List<BlockSourceTargetNodePair> blockSourceTargetNodePairs) {
+      sourceNodes = new DatanodeDescriptor[blockSourceTargetNodePairs.size()];
+      sourceStorageTypes = new StorageType[blockSourceTargetNodePairs.size()];
+      targetNodes = new DatanodeDescriptor[blockSourceTargetNodePairs.size()];
+      targetStorageTypes = new StorageType[blockSourceTargetNodePairs.size()];
 
+      for (int i = 0; i < blockSourceTargetNodePairs.size(); i++) {
+        sourceNodes[i] = blockSourceTargetNodePairs.get(i).sourceNode;
+        sourceStorageTypes[i] = blockSourceTargetNodePairs
+            .get(i).sourceStorageType;
+        targetNodes[i] = blockSourceTargetNodePairs.get(i).targetNode;
+        targetStorageTypes[i] = blockSourceTargetNodePairs
+            .get(i).targetStorageType;
+      }
     }
 
-    public StorageTypeNodeMap getTargetsLocsForExpectedStorages(
-        StorageTypeNodeMap locsForExpectedStorageTypes) {
-      return this.locsForExpectedStorageTypes;
-
-    }
   }
+
+  public class BlockInfoToMoveStorageBatch {
+    private long trackId;
+    public List<BlockInfoToMoveStorage> blockInfosToMoveStorages = new ArrayList<>();
+
+    public long getTrackID() {
+      return this.trackId;
+    }
+
+    public BlockInfoToMoveStorageBatch(
+        List<BlockInfoToMoveStorage> blockInfoToMoveStorageBtach) {
+
+      this.blockInfosToMoveStorages.addAll(blockInfoToMoveStorageBtach);
+    }
+
+    public void addBlocksToMoveStorageBatch(
+        List<BlockInfoToMoveStorage> blockInfoToMoveStorageBtach) {
+      this.blockInfosToMoveStorages.addAll(blockInfoToMoveStorageBtach);
+    }
+
+  }
+
+  /**
+   * 
+   * @param inodeID
+   */
+  public void add(long inodeID) {
+    unSatisfiedStoragePolicyFiles.add(inodeID);
+  }
+
 }

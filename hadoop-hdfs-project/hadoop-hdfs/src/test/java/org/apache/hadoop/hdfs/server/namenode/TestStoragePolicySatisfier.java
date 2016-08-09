@@ -7,6 +7,8 @@ import org.apache.hadoop.fs.StorageType;
 import org.apache.hadoop.hdfs.DistributedFileSystem;
 import org.apache.hadoop.hdfs.HdfsConfiguration;
 import org.apache.hadoop.hdfs.MiniDFSCluster;
+import org.apache.hadoop.hdfs.server.blockmanagement.DatanodeDescriptor;
+import org.apache.hadoop.hdfs.server.namenode.StoragePolicySatisfier.BlockInfoToMoveStorage;
 import org.junit.Test;
 
 public class TestStoragePolicySatisfier {
@@ -16,10 +18,11 @@ public class TestStoragePolicySatisfier {
   public void testMoveWhenStoragePolicyNotSatisfying() throws Exception {
     // HDFS-8147
     final Configuration conf = new HdfsConfiguration();
+    conf.setLong("dfs.block.size", 1024);
     // start 10 datanodes
     int numOfDatanodes = 3;
     int storagesPerDatanode=2;
-    long capacity = 256 * 1024 * 1024;
+    long capacity = 2 * 256 * 1024 * 1024;
     long[][] capacities = new long[numOfDatanodes][storagesPerDatanode];
     for (int i = 0; i < numOfDatanodes; i++) {
       for(int j=0;j<storagesPerDatanode;j++){
@@ -39,10 +42,13 @@ public class TestStoragePolicySatisfier {
     try {
       cluster.waitActive();
       final DistributedFileSystem dfs = cluster.getFileSystem();
+
       final String file = "/testMoveWhenStoragePolicyNotSatisfying";
       // write to DISK
       final FSDataOutputStream out = dfs.create(new Path(file));
-      out.writeChars("testMoveWhenStoragePolicyNotSatisfying");
+      for (int i = 0; i < 1000; i++) {
+        out.writeChars("t");
+      }
       out.close();
 
       // move to ARCHIVE
@@ -78,10 +84,20 @@ public class TestStoragePolicySatisfier {
 
       namesystem.getBlockManager().satisfyStoragePolicy(inode.getId());
 
-      Thread.sleep(1000000000);
+      Thread.sleep(100000);
       System.out
           .println(namesystem.getBlockManager().sps.storageMismatchedBlocks);
+      for (BlockInfoToMoveStorage blockInfoToMoveStorage : namesystem
+          .getBlockManager().sps.storageMismatchedBlocks) {
 
+        System.out.println("Block: " + blockInfoToMoveStorage.getBlock());
+
+        DatanodeDescriptor[] sourceNodes = blockInfoToMoveStorage.sourceNodes;
+        for (int i = 0; i < sourceNodes.length; i++) {
+          System.out.println("Source Node=" + sourceNodes[i] + "  TargetNode="
+              + blockInfoToMoveStorage.targetNodes[i]);
+        }
+      }
     } finally {
       cluster.shutdown();
     }

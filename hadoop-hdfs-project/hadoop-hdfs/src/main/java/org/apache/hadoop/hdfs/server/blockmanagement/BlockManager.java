@@ -159,8 +159,6 @@ public class BlockManager implements BlockStatsMXBean {
   /** flag indicating whether replication queues have been initialized */
   private boolean initializedReplQueues;
 
-  private UnSatisfiedStoragePolicyFiles unSatisfiedStoragePloicyFiles;
-
   private final AtomicLong postponedMisreplicatedBlocksCount = new AtomicLong(0L);
   private final long startupDelayBlockDeletionInMs;
   private final BlockReportLeaseManager blockReportLeaseManager;
@@ -340,7 +338,7 @@ public class BlockManager implements BlockStatsMXBean {
   private boolean hasNonEcBlockUsingStripedID = false;
 
   private final BlockIdManager blockIdManager;
-  private Daemon storagePolicySatisfierThread = null;
+
 
   @VisibleForTesting
   public StoragePolicySatisfier sps;
@@ -368,10 +366,7 @@ public class BlockManager implements BlockStatsMXBean {
       datanodeManager.getHost2DatanodeMap());
     storagePolicySuite = BlockStoragePolicySuite.createDefaultSuite();
 
-    unSatisfiedStoragePloicyFiles = new UnSatisfiedStoragePolicyFiles();
-    sps = new StoragePolicySatisfier(namesystem, conf, this,
-        unSatisfiedStoragePloicyFiles);
-    storagePolicySatisfierThread = new Daemon(sps);
+    sps = new StoragePolicySatisfier(namesystem, conf, this);
     pendingReconstruction = new PendingReconstructionBlocks(conf.getInt(
         DFSConfigKeys.DFS_NAMENODE_RECONSTRUCTION_PENDING_TIMEOUT_SEC_KEY,
         DFSConfigKeys.DFS_NAMENODE_RECONSTRUCTION_PENDING_TIMEOUT_SEC_DEFAULT)
@@ -569,8 +564,7 @@ public class BlockManager implements BlockStatsMXBean {
     this.replicationThread.start();
     storageInfoDefragmenterThread.setName("StorageInfoMonitor");
     storageInfoDefragmenterThread.start();
-    storagePolicySatisfierThread.setName("StoragePolicySatisfier");
-    storagePolicySatisfierThread.start();
+    sps.start();
     this.blockReportThread.start();
     mxBeanName = MBeans.register("NameNode", "BlockStats", this);
     bmSafeMode.activate(blockTotal);
@@ -585,8 +579,7 @@ public class BlockManager implements BlockStatsMXBean {
       replicationThread.join(3000);
       storageInfoDefragmenterThread.join(3000);
       blockReportThread.join(3000);
-      storagePolicySatisfierThread.interrupt();
-      storagePolicySatisfierThread.join(3000);
+      sps.stop();
     } catch (InterruptedException ie) {
     }
     datanodeManager.close();
@@ -4594,7 +4587,11 @@ public class BlockManager implements BlockStatsMXBean {
     return blockIdManager.isGenStampInFuture(block);
   }
 
-  public void satisfyStoragePolicy(long inodeID) {
-    unSatisfiedStoragePloicyFiles.add(inodeID);
+  public void satisfyStoragePolicy(long inodeID) throws IOException {
+    if (sps != null) {
+      sps.add(inodeID);
+    } else {
+      throw new IOException("Storage Policy Satisfier is not initialized.");
+    }
   }
 }

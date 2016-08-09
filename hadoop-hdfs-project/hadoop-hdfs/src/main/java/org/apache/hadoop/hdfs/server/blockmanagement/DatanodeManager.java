@@ -18,6 +18,7 @@
 package org.apache.hadoop.hdfs.server.blockmanagement;
 
 import static org.apache.hadoop.hdfs.server.protocol.DatanodeProtocol.DNA_ERASURE_CODING_RECONSTRUCTION;
+import static org.apache.hadoop.hdfs.server.protocol.DatanodeProtocol.DNA_BLOCK_STORAGE_MOVEMENT;
 import static org.apache.hadoop.util.Time.monotonicNow;
 
 import com.google.common.annotations.VisibleForTesting;
@@ -41,6 +42,8 @@ import org.apache.hadoop.hdfs.server.blockmanagement.DatanodeDescriptor.CachedBl
 import org.apache.hadoop.hdfs.server.namenode.CachedBlock;
 import org.apache.hadoop.hdfs.server.namenode.NameNode;
 import org.apache.hadoop.hdfs.server.namenode.Namesystem;
+import org.apache.hadoop.hdfs.server.namenode.StoragePolicySatisfier.BlockInfoToMoveStorage;
+import org.apache.hadoop.hdfs.server.namenode.StoragePolicySatisfier.BlockInfoToMoveStorageBatch;
 import org.apache.hadoop.hdfs.server.protocol.*;
 import org.apache.hadoop.hdfs.server.protocol.BlockECReconstructionCommand.BlockECReconstructionInfo;
 import org.apache.hadoop.hdfs.server.protocol.BlockRecoveryCommand.RecoveringBlock;
@@ -1533,6 +1536,9 @@ public class DatanodeManager {
     heartbeatManager.updateHeartbeat(nodeinfo, reports, cacheCapacity,
         cacheUsed, xceiverCount, failedVolumes, volumeFailureSummary);
 
+    // TODO: Get the storage policy movement result and update in
+    // StorageMovementAttemptedItems
+
     // If we are in safemode, do not send back any recovery / replication
     // requests. Don't even drain the existing queue of work.
     if (namesystem.isInSafeMode()) {
@@ -1577,6 +1583,18 @@ public class DatanodeManager {
       cmds.add(new BalancerBandwidthCommand(nodeinfo.getBalancerBandwidth()));
       // set back to 0 to indicate that datanode has been sent the new value
       nodeinfo.setBalancerBandwidth(0);
+    }
+
+    // check pending storage movement tasks
+    List<BlockInfoToMoveStorageBatch> pendingBlockStorageMovementsList = nodeinfo
+        .getBlockStorageMovementCommand(1);
+
+    if (pendingBlockStorageMovementsList != null) {
+      for (BlockInfoToMoveStorageBatch blockInfoToMoveStorageBatch : pendingBlockStorageMovementsList) {
+        cmds.add(new BlockStorageMovementCommand(DNA_BLOCK_STORAGE_MOVEMENT,
+            blockPoolId, blockInfoToMoveStorageBatch.getTrackID(),
+            blockInfoToMoveStorageBatch.blockInfosToMoveStorages));
+      }
     }
 
     if (!cmds.isEmpty()) {

@@ -5,18 +5,25 @@ import java.util.Queue;
 
 public class UnSatisfiedStoragePolicyFiles {
   // TODO: need to handle concurrency
-  Queue<Long> usatisfiedStoragePolicyFiles = new LinkedList<Long>();
 
-  public void add(Long inodeID) {
+  //
+  // It might take anywhere between 5 to 10 minutes before
+  // a request is timed out.
+  //
+  private long timeout = 5 * 60 * 1000;
+  private Queue<Long> usatisfiedStoragePolicyFiles = new LinkedList<>();
+  private final StorageMovementAttemptedItems storageMovementAttemptedItems = new StorageMovementAttemptedItems(
+      timeout, this);
+
+  public synchronized void add(Long inodeID) {
     usatisfiedStoragePolicyFiles.add(inodeID);
   }
 
-  public void remove(Long inodeID) {
-    usatisfiedStoragePolicyFiles.remove(inodeID);
-  }
-
-  public long get() {
+  public synchronized long get() {
     Long nodeid = usatisfiedStoragePolicyFiles.poll();
-    return nodeid == null ? 0 : nodeid;
+    if (nodeid == null) {
+      return 0;
+    }
+    return nodeid;
   }
 }

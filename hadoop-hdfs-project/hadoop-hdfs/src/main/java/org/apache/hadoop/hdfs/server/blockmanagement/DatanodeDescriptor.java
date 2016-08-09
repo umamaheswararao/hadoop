@@ -42,6 +42,8 @@ import org.apache.hadoop.hdfs.protocol.DatanodeInfo;
 import org.apache.hadoop.hdfs.protocol.ExtendedBlock;
 import org.apache.hadoop.hdfs.server.common.HdfsServerConstants;
 import org.apache.hadoop.hdfs.server.namenode.CachedBlock;
+import org.apache.hadoop.hdfs.server.namenode.StoragePolicySatisfier.BlockInfoToMoveStorage;
+import org.apache.hadoop.hdfs.server.namenode.StoragePolicySatisfier.BlockInfoToMoveStorageBatch;
 import org.apache.hadoop.hdfs.server.protocol.BlockECReconstructionCommand.BlockECReconstructionInfo;
 import org.apache.hadoop.hdfs.server.protocol.BlockReportContext;
 import org.apache.hadoop.hdfs.server.protocol.DatanodeStorage;
@@ -211,6 +213,9 @@ public class DatanodeDescriptor extends DatanodeInfo {
   /** A set of blocks to be invalidated by this datanode */
   private final LightWeightHashSet<Block> invalidateBlocks =
       new LightWeightHashSet<>();
+  /** A queue of blocks to be moves their storages by this datanode */
+  private final BlockQueue<BlockInfoToMoveStorageBatch> storageMovementNeededBlocks = new BlockQueue<>();
+  private final Map<Long, Integer> storageMovementResult = new HashMap<>();
 
   /* Variables for maintaining number of blocks scheduled to be written to
    * this storage. This count is approximate and might be slightly bigger
@@ -738,7 +743,7 @@ public class DatanodeDescriptor extends DatanodeInfo {
   }
 
   /** Increment the number of blocks scheduled. */
-  void incrementBlocksScheduled(StorageType t) {
+  public void incrementBlocksScheduled(StorageType t) {
     currApproxBlocksScheduled.add(t, 1);
   }
   
@@ -961,5 +966,21 @@ public class DatanodeDescriptor extends DatanodeInfo {
   public boolean isRegistered() {
     return isAlive() && !forceRegistration;
   }
+
+  public void addBlocksToMoveStorage(
+      BlockInfoToMoveStorageBatch blockInfoToMoveStorageBatch) {
+    this.storageMovementNeededBlocks.offer(blockInfoToMoveStorageBatch);
+  }
+
+  public List<BlockInfoToMoveStorageBatch> getBlockStorageMovementCommand(
+      int numBatches) {
+    return storageMovementNeededBlocks.poll(numBatches);
+  }
+  
+  public void addStorageMovementResult(long trackID, int result) {
+    this.storageMovementResult.put(trackID, result);
+  }
+  
+
 }
 
