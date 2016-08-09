@@ -18,7 +18,7 @@
 package org.apache.hadoop.hdfs.server.blockmanagement;
 
 import static org.apache.hadoop.hdfs.server.protocol.DatanodeProtocol.DNA_ERASURE_CODING_RECONSTRUCTION;
-import static org.apache.hadoop.hdfs.server.protocol.DatanodeProtocol.DNA_BLOCK_STORAGE_MOVEMENT;
+import static org.apache.hadoop.hdfs.server.protocol.DatanodeProtocol.DNA_STORAGE_POLICY_SATISFY_MOVEMENT;
 import static org.apache.hadoop.util.Time.monotonicNow;
 
 import com.google.common.annotations.VisibleForTesting;
@@ -42,12 +42,12 @@ import org.apache.hadoop.hdfs.server.blockmanagement.DatanodeDescriptor.CachedBl
 import org.apache.hadoop.hdfs.server.namenode.CachedBlock;
 import org.apache.hadoop.hdfs.server.namenode.NameNode;
 import org.apache.hadoop.hdfs.server.namenode.Namesystem;
-import org.apache.hadoop.hdfs.server.namenode.StoragePolicySatisfier.BlockInfoToMoveStorage;
 import org.apache.hadoop.hdfs.server.namenode.StoragePolicySatisfier.BlockInfoToMoveStorageBatch;
 import org.apache.hadoop.hdfs.server.protocol.*;
 import org.apache.hadoop.hdfs.server.protocol.BlockECReconstructionCommand.BlockECReconstructionInfo;
 import org.apache.hadoop.hdfs.server.protocol.BlockRecoveryCommand.RecoveringBlock;
 import org.apache.hadoop.hdfs.server.protocol.BlockRecoveryCommand.RecoveringStripedBlock;
+import org.apache.hadoop.hdfs.server.protocol.StoragePolicySatisfyMovementCommand.BlockToMoveStoragePair;
 import org.apache.hadoop.ipc.Server;
 import org.apache.hadoop.net.*;
 import org.apache.hadoop.net.NetworkTopology.InvalidTopologyException;
@@ -1567,6 +1567,16 @@ public class DatanodeManager {
       cmds.add(new BlockECReconstructionCommand(
           DNA_ERASURE_CODING_RECONSTRUCTION, pendingECList));
     }
+
+    // TODO: add pending storage policy movement tasks
+    List<BlockToMoveStoragePair> pendingStoragePolicyMoveList =
+        new ArrayList<>();
+    if (pendingStoragePolicyMoveList != null) {
+      cmds.add(new StoragePolicySatisfyMovementCommand(
+          DatanodeProtocol.DNA_STORAGE_POLICY_SATISFY_MOVEMENT,
+          pendingStoragePolicyMoveList));
+    }
+
     // check block invalidation
     Block[] blks = nodeinfo.getInvalidateBlocks(blockInvalidateLimit);
     if (blks != null) {
@@ -1591,7 +1601,8 @@ public class DatanodeManager {
 
     if (pendingBlockStorageMovementsList != null) {
       for (BlockInfoToMoveStorageBatch blockInfoToMoveStorageBatch : pendingBlockStorageMovementsList) {
-        cmds.add(new BlockStorageMovementCommand(DNA_BLOCK_STORAGE_MOVEMENT,
+        cmds.add(
+            new BlockStorageMovementCommand(DNA_STORAGE_POLICY_SATISFY_MOVEMENT,
             blockPoolId, blockInfoToMoveStorageBatch.getTrackID(),
             blockInfoToMoveStorageBatch.blockInfosToMoveStorages));
       }
