@@ -34,7 +34,9 @@ import org.apache.hadoop.hdfs.protocol.SnapshotAccessControlException;
 import org.apache.hadoop.hdfs.server.blockmanagement.BlockInfo;
 import org.apache.hadoop.hdfs.server.blockmanagement.BlockManager;
 import org.apache.hadoop.hdfs.server.blockmanagement.BlockStoragePolicySuite;
+import org.apache.hadoop.hdfs.server.namenode.snapshot.Snapshot;
 import org.apache.hadoop.hdfs.util.EnumCounters;
+import org.apache.hadoop.hdfs.util.ReadOnlyList;
 import org.apache.hadoop.security.AccessControlException;
 
 import com.google.common.collect.Lists;
@@ -186,7 +188,23 @@ public class FSDirAttrOp {
         true);
     INode inode = FSDirectory.resolveLastINode(iip);
     // return setStoragePolicy(fsd, bm, src, policy.getId(), "set");
-    bm.satisfyStoragePolicy(inode.getId());
+    if (inode.isFile()) {
+      bm.satisfyStoragePolicy(inode.getId());
+    } else {
+      // For directories, we need to list the immediate files and call satisfy
+      // for all files?
+      ReadOnlyList<INode> childrenList = ((INodeDirectory) inode)
+          .getChildrenList(Snapshot.CURRENT_STATE_ID);
+      for (INode inodeChild : childrenList) {
+        if (inodeChild.isFile()) {
+        bm.satisfyStoragePolicy(inodeChild.getId());
+        } else {
+          // Ignore as we don't support deep recursion now
+        }
+      }
+    }
+
+    // TODO: support persistence for the requests
   }
 
   static HdfsFileStatus setStoragePolicy(FSDirectory fsd, BlockManager bm,
