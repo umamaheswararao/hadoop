@@ -980,7 +980,7 @@ public class PBHelper {
     Collection<BlockInfoToMoveStorage> blockSPSInfos = blkStorageMovementCmd
         .getBlockStorageMovementTasks();
     for (BlockInfoToMoveStorage blkStorageMovInfo : blockSPSInfos) {
-      builder.addBlockStorageMovementInfo(
+      builder.addBlockStorageMovementInfoProto(
           convertBlockToMoveStorageInfo(blkStorageMovInfo));
     }
     builder.setTrackId(blkStorageMovementCmd.getTrackID());
@@ -1013,7 +1013,7 @@ public class PBHelper {
       BlockStorageMovementCommandProto blkStoragePolicySatisfyCmdProto) {
     List<BlockInfoToMoveStorage> blockToMoveStoragePair = new ArrayList<>();
     List<BlockStorageMovementInfoProto> blkSPSatisfyList = blkStoragePolicySatisfyCmdProto
-        .getBlockStorageMovementInfoList();
+        .getBlockStorageMovementInfoProtoList();
     for (BlockStorageMovementInfoProto blkSPSatisfy : blkSPSatisfyList) {
       blockToMoveStoragePair.add(convertBlockToMoveStorageInfo(blkSPSatisfy));
     }

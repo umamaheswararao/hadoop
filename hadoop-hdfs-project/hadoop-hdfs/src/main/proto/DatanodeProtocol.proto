@@ -162,13 +162,13 @@ message BlockECReconstructionCommandProto {
  */
 message BlockStorageMovementCommandProto {
   required uint64 trackId = 1;
-  repeated BlockStorageMovementInfo blockStorageMovementInfo = 2;
+  repeated BlockStorageMovementInfoProto blockStorageMovementInfoProto = 2;
 }
 
 /**
  * Block storage movement information
  */
-message BlockStorageMovementInfo {
+message BlockStorageMovementInfoProto {
   required ExtendedBlockProto block = 1;
   required DatanodeInfosProto sourceDnInfos = 2;
   required DatanodeInfosProto targetDnInfos = 3;
