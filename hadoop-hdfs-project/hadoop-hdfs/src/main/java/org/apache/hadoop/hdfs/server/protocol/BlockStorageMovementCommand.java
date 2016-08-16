@@ -18,24 +18,26 @@
 package org.apache.hadoop.hdfs.server.protocol;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 
 import org.apache.hadoop.fs.StorageType;
-import org.apache.hadoop.hdfs.protocol.Block;
+import org.apache.hadoop.hdfs.protocol.DatanodeInfo;
+import org.apache.hadoop.hdfs.protocol.ExtendedBlock;
 import org.apache.hadoop.hdfs.server.blockmanagement.BlockSourceTargetNodePair;
 import org.apache.hadoop.hdfs.server.blockmanagement.DatanodeDescriptor;
 
 public class BlockStorageMovementCommand extends DatanodeCommand {
-  final String poolId;
-  private Block[] blocks;
-  public DatanodeDescriptor sourceNodes[][];
-  public StorageType sourceStorageTypes[][];
-  public DatanodeDescriptor targetNodes[][];
-  public StorageType targetStorageTypes[][];
-  public long trackID;
+  private String poolId;
+  private ExtendedBlock[] blocks;
+  private DatanodeInfo sourceNodes[][];
+  private StorageType sourceStorageTypes[][];
+  private DatanodeInfo targetNodes[][];
+  private StorageType targetStorageTypes[][];
+  private final long trackID;
+  List<BlockInfoToMoveStorage> blockStorageMovementTasks;
 
-
-  BlockStorageMovementCommand(int action, String poolId, Block[] blocks,
+  BlockStorageMovementCommand(int action, String poolId, ExtendedBlock[] blocks,
       long trackID,
       DatanodeDescriptor sourceNodes[][], StorageType sourceStorageTypes[][],
       DatanodeDescriptor targetNodes[][], StorageType targetStorageTypes[][]) {
@@ -54,12 +56,12 @@ public class BlockStorageMovementCommand extends DatanodeCommand {
     super(action);
     this.poolId = poolId;
     this.trackID = trackID;
-    this.blocks = new Block[pendingBlockStorageMovementsList.size()];
-    this.sourceNodes = new DatanodeDescriptor[pendingBlockStorageMovementsList
+    this.blocks = new ExtendedBlock[pendingBlockStorageMovementsList.size()];
+    this.sourceNodes = new DatanodeInfo[pendingBlockStorageMovementsList
         .size()][];
     this.sourceStorageTypes = new StorageType[pendingBlockStorageMovementsList
         .size()][];
-    this.targetNodes = new DatanodeDescriptor[pendingBlockStorageMovementsList
+    this.targetNodes = new DatanodeInfo[pendingBlockStorageMovementsList
         .size()][];
     this.targetStorageTypes = new StorageType[pendingBlockStorageMovementsList
         .size()][];
@@ -71,6 +73,22 @@ public class BlockStorageMovementCommand extends DatanodeCommand {
       targetNodes[i] = p.targetNodes;
       targetStorageTypes[i] = p.targetStorageTypes;
     }
+    this.blockStorageMovementTasks = pendingBlockStorageMovementsList;
+  }
+
+  public BlockStorageMovementCommand(int action, long trackID,
+      List<BlockInfoToMoveStorage> pendingBlockStorageMovementsList) {
+    super(action);
+    this.trackID = trackID;
+    this.blockStorageMovementTasks = pendingBlockStorageMovementsList;
+  }
+
+  public List<BlockInfoToMoveStorage> getBlockStorageMovementTasks() {
+    return blockStorageMovementTasks;
+  }
+
+  public long getTrackID() {
+    return this.trackID;
   }
 
   public static class BlockInfoToMoveStorageBatch {
@@ -96,25 +114,54 @@ public class BlockStorageMovementCommand extends DatanodeCommand {
   }
 
   public static class BlockInfoToMoveStorage {
-    private Block blk;
-    public DatanodeDescriptor sourceNodes[];
+    private ExtendedBlock blk;
+    public DatanodeInfo sourceNodes[];
     public StorageType sourceStorageTypes[];
-    public DatanodeDescriptor targetNodes[];
+    public DatanodeInfo targetNodes[];
     public StorageType targetStorageTypes[];
 
-    public void addBlock(Block block) {
+    public BlockInfoToMoveStorage(ExtendedBlock block,
+        DatanodeInfo[] sourceDnInfos, DatanodeInfo[] targetDnInfos,
+        StorageType[] srcStorageTypes, StorageType[] targetStorageTypes) {
+      this.blk = block;
+      this.sourceNodes = sourceDnInfos;
+      this.targetNodes = targetDnInfos;
+      this.sourceStorageTypes = srcStorageTypes;
+      this.targetStorageTypes = targetStorageTypes;
+    }
+
+    public BlockInfoToMoveStorage() {
+    }
+
+    public void addBlock(ExtendedBlock block) {
       this.blk = block;
     }
 
-    public Block getBlock() {
+    public ExtendedBlock getBlock() {
       return this.blk;
+    }
+
+    public DatanodeInfo[] getSources() {
+      return sourceNodes;
+    }
+
+    public DatanodeInfo[] getTargets() {
+      return targetNodes;
+    }
+
+    public StorageType[] getTargetStorageTypes() {
+      return targetStorageTypes;
+    }
+
+    public StorageType[] getSourceStorageTypes() {
+      return sourceStorageTypes;
     }
 
     public void addBlocksToMoveStorage(
         List<BlockSourceTargetNodePair> blockSourceTargetNodePairs) {
-      sourceNodes = new DatanodeDescriptor[blockSourceTargetNodePairs.size()];
+      sourceNodes = new DatanodeInfo[blockSourceTargetNodePairs.size()];
       sourceStorageTypes = new StorageType[blockSourceTargetNodePairs.size()];
-      targetNodes = new DatanodeDescriptor[blockSourceTargetNodePairs.size()];
+      targetNodes = new DatanodeInfo[blockSourceTargetNodePairs.size()];
       targetStorageTypes = new StorageType[blockSourceTargetNodePairs.size()];
 
       for (int i = 0; i < blockSourceTargetNodePairs.size(); i++) {
@@ -127,6 +174,17 @@ public class BlockStorageMovementCommand extends DatanodeCommand {
       }
     }
 
+    @Override
+    public String toString() {
+      return new StringBuilder().append("BlockInfoToMoveStorage(\n  ")
+          .append("Moving block: ").append(blk).append(" From: ")
+          .append(Arrays.asList(sourceNodes)).append(" To: [")
+          .append(Arrays.asList(targetNodes)).append(")\n")
+          .append(" sourceStorageTypes: ")
+          .append(Arrays.toString(sourceStorageTypes))
+          .append(" targetStorageTypes: ")
+          .append(Arrays.toString(targetStorageTypes)).toString();
+    }
   }
 
 }

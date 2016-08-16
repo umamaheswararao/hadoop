@@ -61,6 +61,7 @@ message DatanodeCommandProto {
     NullDatanodeCommand = 7;
     BlockIdCommand = 8;
     BlockECReconstructionCommand = 9;
+    BlockStorageMovementCommand = 10;
   }
 
   required Type cmdType = 1;    // Type of the command
@@ -75,6 +76,7 @@ message DatanodeCommandProto {
   optional RegisterCommandProto registerCmd = 7;
   optional BlockIdCommandProto blkIdCmd = 8;
   optional BlockECReconstructionCommandProto blkECReconstructionCmd = 9;
+  optional BlockStorageMovementCommandProto blkStorageMovementCmd = 10;
 }
 
 /**
@@ -153,6 +155,25 @@ message RegisterCommandProto {
  */
 message BlockECReconstructionCommandProto {
   repeated BlockECReconstructionInfoProto blockECReconstructioninfo = 1;
+}
+
+/**
+ * Block storage movement command
+ */
+message BlockStorageMovementCommandProto {
+  required uint64 trackId = 1;
+  repeated BlockStorageMovementInfo blockStorageMovementInfo = 2;
+}
+
+/**
+ * Block storage movement information
+ */
+message BlockStorageMovementInfo {
+  required ExtendedBlockProto block = 1;
+  required DatanodeInfosProto sourceDnInfos = 2;
+  required DatanodeInfosProto targetDnInfos = 3;
+  required StorageTypesProto sourceStorageTypes = 4;
+  required StorageTypesProto targetStorageTypes = 5;
 }
 
 /**

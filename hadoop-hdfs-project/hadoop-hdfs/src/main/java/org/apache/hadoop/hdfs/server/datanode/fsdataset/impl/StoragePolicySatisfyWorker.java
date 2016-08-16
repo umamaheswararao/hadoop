@@ -28,7 +28,6 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.Socket;
 import java.util.ArrayList;
-import java.util.Collection;
 import java.util.EnumSet;
 import java.util.List;
 import java.util.concurrent.Callable;
@@ -58,7 +57,7 @@ import org.apache.hadoop.hdfs.protocol.proto.DataTransferProtos.Status;
 import org.apache.hadoop.hdfs.security.token.block.BlockTokenIdentifier;
 import org.apache.hadoop.hdfs.server.datanode.DNConf;
 import org.apache.hadoop.hdfs.server.datanode.DataNode;
-import org.apache.hadoop.hdfs.server.protocol.StoragePolicySatisfyMovementCommand.BlockToMoveStoragePair;
+import org.apache.hadoop.hdfs.server.protocol.BlockStorageMovementCommand.BlockInfoToMoveStorage;
 import org.apache.hadoop.io.IOUtils;
 import org.apache.hadoop.net.NetUtils;
 import org.apache.hadoop.security.token.Token;
@@ -146,18 +145,18 @@ public class StoragePolicySatisfyWorker {
   }
 
   public void processBlockToMoveStorageTasks(
-      Collection<BlockToMoveStoragePair> blockToMoveStorageTasks) {
+      long trackID, List<BlockInfoToMoveStorage> blockStorageMovementTasks) {
     List<Future<Void>> moverTaskFuturesMap = new ArrayList<>();
     Future<Void> moveCallable = null;
-    for (BlockToMoveStoragePair blockToMoveStoragePair : blockToMoveStorageTasks) {
-      assert blockToMoveStoragePair
-          .getSources().length == blockToMoveStoragePair.getTargets().length;
+    for (BlockInfoToMoveStorage blockInfoToMoveStorage : blockStorageMovementTasks) {
+      assert blockInfoToMoveStorage
+          .getSources().length == blockInfoToMoveStorage.getTargets().length;
 
       BlockToMoveStorageTask blockToMoveStorageTask = new BlockToMoveStorageTask(
-          blockToMoveStoragePair.getBlock(),
-          blockToMoveStoragePair.getSources(),
-          blockToMoveStoragePair.getTargets(),
-          blockToMoveStoragePair.getTargetStorageTypes());
+          blockInfoToMoveStorage.getBlock(),
+          blockInfoToMoveStorage.getSources(),
+          blockInfoToMoveStorage.getTargets(),
+          blockInfoToMoveStorage.getTargetStorageTypes());
       moveCallable = moverExecutorCompletionService
           .submit(blockToMoveStorageTask);
       moverTaskFuturesMap.add(moveCallable);

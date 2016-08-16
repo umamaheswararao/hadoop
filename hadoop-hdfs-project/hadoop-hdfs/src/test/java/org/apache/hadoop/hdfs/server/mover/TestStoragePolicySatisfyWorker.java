@@ -18,8 +18,9 @@
 package org.apache.hadoop.hdfs.server.mover;
 
 import java.io.File;
+import java.io.IOException;
 import java.util.ArrayList;
-import java.util.Collection;
+import java.util.List;
 
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FSDataOutputStream;
@@ -37,9 +38,15 @@ import org.apache.hadoop.hdfs.protocol.LocatedBlock;
 import org.apache.hadoop.hdfs.server.balancer.TestBalancer;
 import org.apache.hadoop.hdfs.server.datanode.DataNode;
 import org.apache.hadoop.hdfs.server.datanode.fsdataset.impl.StoragePolicySatisfyWorker;
-import org.apache.hadoop.hdfs.server.protocol.StoragePolicySatisfyMovementCommand.BlockToMoveStoragePair;
+import org.apache.hadoop.hdfs.server.namenode.INode;
+import org.apache.hadoop.hdfs.server.protocol.BlockStorageMovementCommand.BlockInfoToMoveStorage;
+import org.apache.hadoop.test.GenericTestUtils;
 import org.junit.Assert;
 import org.junit.Test;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import com.google.common.base.Supplier;
 
 /**
  * This class tests the behavior of moving block replica to the given storage
@@ -47,7 +54,8 @@ import org.junit.Test;
  *
  */
 public class TestStoragePolicySatisfyWorker {
-
+  private static final Logger LOG = LoggerFactory
+      .getLogger(TestStoragePolicySatisfyWorker.class);
   static final int DEFAULT_BLOCK_SIZE = 100;
   File keytabFile;
   String principal;
@@ -105,34 +113,52 @@ public class TestStoragePolicySatisfyWorker {
 
       StoragePolicySatisfyWorker worker = new StoragePolicySatisfyWorker(conf,
           src);
-      Collection<BlockToMoveStoragePair> blockToMoveStorageTasks = new ArrayList<>();
-      BlockToMoveStoragePair storagePair = prepareBlockToMoveStoragePair(
+      List<BlockInfoToMoveStorage> blockToMoveStorageTasks = new ArrayList<>();
+      BlockInfoToMoveStorage storagePair = prepareBlockToMoveStoragePair(
           lb.getBlock(), lb.getLocations()[0], targetDnInfo,
           lb.getStorageTypes()[0], StorageType.ARCHIVE);
       blockToMoveStorageTasks.add(storagePair);
-      worker.processBlockToMoveStorageTasks(blockToMoveStorageTasks);
+      INode inode = cluster.getNamesystem().getFSDirectory().getINode(file);
+      worker.processBlockToMoveStorageTasks(inode.getId(), blockToMoveStorageTasks);
       cluster.triggerHeartbeats();
 
-      // Wait till namenode notified
-      Thread.sleep(3000);
-      lb = dfs.getClient().getLocatedBlocks(file, 0).get(0);
-      storageTypes = lb.getStorageTypes();
-      int archiveCount = 0;
-      for (StorageType storageType : storageTypes) {
-        if (StorageType.ARCHIVE == storageType) {
-          archiveCount++;
-        }
-      }
-      Assert.assertEquals(archiveCount, 1);
+      // Wait till namenode notified about the block location details
+      waitForLocatedBlockWithArchiveStorageType(dfs, file, 1, 30000);
     } finally {
       cluster.shutdown();
     }
   }
 
-  BlockToMoveStoragePair prepareBlockToMoveStoragePair(ExtendedBlock block,
+  private void waitForLocatedBlockWithArchiveStorageType(
+      final DistributedFileSystem dfs, final String file,
+      int expectedArchiveCount, int timeout) throws Exception {
+    GenericTestUtils.waitFor(new Supplier<Boolean>() {
+      @Override
+      public Boolean get() {
+        LocatedBlock lb = null;
+        try {
+          lb = dfs.getClient().getLocatedBlocks(file, 0).get(0);
+        } catch (IOException e) {
+          LOG.error("Exception while getting located blocks", e);
+          return false;
+        }
+        int archiveCount = 0;
+        for (StorageType storageType : lb.getStorageTypes()) {
+          if (StorageType.ARCHIVE == storageType) {
+            archiveCount++;
+          }
+        }
+        LOG.info("Archive replica count, expected={} and actual={}",
+            expectedArchiveCount, archiveCount);
+        return expectedArchiveCount == archiveCount;
+      }
+    }, 100, timeout);
+  }
+
+  BlockInfoToMoveStorage prepareBlockToMoveStoragePair(ExtendedBlock block,
       DatanodeInfo src, DatanodeInfo destin, StorageType storageType,
       StorageType targetStorageType) {
-    return new BlockToMoveStoragePair(block, new DatanodeInfo[] { src },
+    return new BlockInfoToMoveStorage(block, new DatanodeInfo[] { src },
         new DatanodeInfo[] { destin }, new StorageType[] { storageType },
         new StorageType[] { targetStorageType });
   }

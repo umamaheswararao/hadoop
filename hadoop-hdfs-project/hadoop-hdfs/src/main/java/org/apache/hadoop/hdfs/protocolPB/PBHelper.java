@@ -48,6 +48,8 @@ import org.apache.hadoop.hdfs.protocol.proto.DatanodeProtocolProtos.ReceivedDele
 import org.apache.hadoop.hdfs.protocol.proto.DatanodeProtocolProtos.RegisterCommandProto;
 import org.apache.hadoop.hdfs.protocol.proto.DatanodeProtocolProtos.VolumeFailureSummaryProto;
 import org.apache.hadoop.hdfs.protocol.proto.DatanodeProtocolProtos.BlockReportContextProto;
+import org.apache.hadoop.hdfs.protocol.proto.DatanodeProtocolProtos.BlockStorageMovementCommandProto;
+import org.apache.hadoop.hdfs.protocol.proto.DatanodeProtocolProtos.BlockStorageMovementInfoProto;
 import org.apache.hadoop.hdfs.protocol.proto.ErasureCodingProtos.BlockECReconstructionInfoProto;
 import org.apache.hadoop.hdfs.protocol.proto.HdfsProtos;
 import org.apache.hadoop.hdfs.protocol.proto.HdfsProtos.BlockProto;
@@ -89,6 +91,8 @@ import org.apache.hadoop.hdfs.server.protocol.BlockECReconstructionCommand.Block
 import org.apache.hadoop.hdfs.server.protocol.BlockRecoveryCommand.RecoveringBlock;
 import org.apache.hadoop.hdfs.server.protocol.BlockRecoveryCommand.RecoveringStripedBlock;
 import org.apache.hadoop.hdfs.server.protocol.BlockReportContext;
+import org.apache.hadoop.hdfs.server.protocol.BlockStorageMovementCommand;
+import org.apache.hadoop.hdfs.server.protocol.BlockStorageMovementCommand.BlockInfoToMoveStorage;
 import org.apache.hadoop.hdfs.server.protocol.BlocksWithLocations;
 import org.apache.hadoop.hdfs.server.protocol.BlocksWithLocations.BlockWithLocations;
 import org.apache.hadoop.hdfs.server.protocol.BlocksWithLocations.StripedBlockWithLocations;
@@ -455,6 +459,8 @@ public class PBHelper {
       return PBHelper.convert(proto.getBlkIdCmd());
     case BlockECReconstructionCommand:
       return PBHelper.convert(proto.getBlkECReconstructionCmd());
+    case BlockStorageMovementCommand:
+      return PBHelper.convert(proto.getBlkStorageMovementCmd());
     default:
       return null;
     }
@@ -588,6 +594,11 @@ public class PBHelper {
       builder.setCmdType(DatanodeCommandProto.Type.BlockECReconstructionCommand)
           .setBlkECReconstructionCmd(
               convert((BlockECReconstructionCommand) datanodeCommand));
+      break;
+    case DatanodeProtocol.DNA_STORAGE_POLICY_SATISFY_MOVEMENT:
+      builder.setCmdType(DatanodeCommandProto.Type.BlockStorageMovementCommand)
+          .setBlkStorageMovementCmd(
+              convert((BlockStorageMovementCommand) datanodeCommand));
       break;
     case DatanodeProtocol.DNA_UNKNOWN: //Not expected
     default:
@@ -960,5 +971,82 @@ public class PBHelper {
     return new BlockECReconstructionCommand(
         DatanodeProtocol.DNA_ERASURE_CODING_RECONSTRUCTION,
         blkECReconstructionInfos);
+  }
+
+  public static BlockStorageMovementCommandProto convert(
+      BlockStorageMovementCommand blkStorageMovementCmd) {
+    BlockStorageMovementCommandProto.Builder builder = BlockStorageMovementCommandProto
+        .newBuilder();
+    Collection<BlockInfoToMoveStorage> blockSPSInfos = blkStorageMovementCmd
+        .getBlockStorageMovementTasks();
+    for (BlockInfoToMoveStorage blkStorageMovInfo : blockSPSInfos) {
+      builder.addBlockStorageMovementInfo(
+          convertBlockToMoveStorageInfo(blkStorageMovInfo));
+    }
+    builder.setTrackId(blkStorageMovementCmd.getTrackID());
+    return builder.build();
+  }
+
+  public static BlockStorageMovementInfoProto convertBlockToMoveStorageInfo(
+      BlockInfoToMoveStorage blkStorageMovInfo) {
+    BlockStorageMovementInfoProto.Builder builder = BlockStorageMovementInfoProto
+        .newBuilder();
+    builder.setBlock(PBHelperClient.convert(blkStorageMovInfo.getBlock()));
+
+    DatanodeInfo[] sourceDnInfos = blkStorageMovInfo.getSources();
+    builder.setSourceDnInfos(convertToDnInfosProto(sourceDnInfos));
+
+    DatanodeInfo[] targetDnInfos = blkStorageMovInfo.getTargets();
+    builder.setTargetDnInfos(convertToDnInfosProto(targetDnInfos));
+
+    StorageType[] sourceStorageTypes = blkStorageMovInfo
+        .getSourceStorageTypes();
+    builder.setSourceStorageTypes(convertStorageTypesProto(sourceStorageTypes));
+
+    StorageType[] targetStorageTypes = blkStorageMovInfo.getTargetStorageTypes();
+    builder.setTargetStorageTypes(convertStorageTypesProto(targetStorageTypes));
+
+    return builder.build();
+  }
+
+  private static DatanodeCommand convert(
+      BlockStorageMovementCommandProto blkStoragePolicySatisfyCmdProto) {
+    List<BlockInfoToMoveStorage> blockToMoveStoragePair = new ArrayList<>();
+    List<BlockStorageMovementInfoProto> blkSPSatisfyList = blkStoragePolicySatisfyCmdProto
+        .getBlockStorageMovementInfoList();
+    for (BlockStorageMovementInfoProto blkSPSatisfy : blkSPSatisfyList) {
+      blockToMoveStoragePair.add(convertBlockToMoveStorageInfo(blkSPSatisfy));
+    }
+    return new BlockStorageMovementCommand(
+        DatanodeProtocol.DNA_STORAGE_POLICY_SATISFY_MOVEMENT,
+        blkStoragePolicySatisfyCmdProto.getTrackId(), blockToMoveStoragePair);
+  }
+
+  public static BlockInfoToMoveStorage convertBlockToMoveStorageInfo(
+      BlockStorageMovementInfoProto blockStoragePolicySatisfyProto) {
+    ExtendedBlockProto blockProto = blockStoragePolicySatisfyProto.getBlock();
+    ExtendedBlock block = PBHelperClient.convert(blockProto);
+
+    DatanodeInfosProto sourceDnInfosProto = blockStoragePolicySatisfyProto
+        .getSourceDnInfos();
+    DatanodeInfo[] sourceDnInfos = PBHelperClient.convert(sourceDnInfosProto);
+
+    DatanodeInfosProto targetDnInfosProto = blockStoragePolicySatisfyProto
+        .getTargetDnInfos();
+    DatanodeInfo[] targetDnInfos = PBHelperClient.convert(targetDnInfosProto);
+
+    StorageTypesProto srcStorageTypesProto = blockStoragePolicySatisfyProto
+        .getSourceStorageTypes();
+    StorageType[] srcStorageTypes = PBHelperClient.convertStorageTypes(
+        srcStorageTypesProto.getStorageTypesList(),
+        srcStorageTypesProto.getStorageTypesList().size());
+
+    StorageTypesProto targetStorageTypesProto = blockStoragePolicySatisfyProto
+        .getTargetStorageTypes();
+    StorageType[] targetStorageTypes = PBHelperClient.convertStorageTypes(
+        targetStorageTypesProto.getStorageTypesList(),
+        targetStorageTypesProto.getStorageTypesList().size());
+    return new BlockInfoToMoveStorage(block, sourceDnInfos, targetDnInfos,
+        srcStorageTypes, targetStorageTypes);
   }
 }

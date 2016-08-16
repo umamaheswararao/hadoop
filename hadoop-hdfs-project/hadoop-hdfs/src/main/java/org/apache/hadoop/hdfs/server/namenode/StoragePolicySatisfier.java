@@ -29,6 +29,7 @@ import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.StorageType;
 import org.apache.hadoop.hdfs.protocol.Block;
 import org.apache.hadoop.hdfs.protocol.BlockStoragePolicy;
+import org.apache.hadoop.hdfs.protocol.ExtendedBlock;
 import org.apache.hadoop.hdfs.protocol.HdfsConstants.DatanodeReportType;
 import org.apache.hadoop.hdfs.server.balancer.Matcher;
 import org.apache.hadoop.hdfs.server.blockmanagement.BlockCollection;
@@ -37,9 +38,9 @@ import org.apache.hadoop.hdfs.server.blockmanagement.BlockManager;
 import org.apache.hadoop.hdfs.server.blockmanagement.BlockSourceTargetNodePair;
 import org.apache.hadoop.hdfs.server.blockmanagement.DatanodeDescriptor;
 import org.apache.hadoop.hdfs.server.blockmanagement.DatanodeStorageInfo;
-import org.apache.hadoop.hdfs.server.protocol.StorageReport;
-import org.apache.hadoop.hdfs.server.protocol.BlockStorageMovementCommand.BlockInfoToMoveStorageBatch;
 import org.apache.hadoop.hdfs.server.protocol.BlockStorageMovementCommand.BlockInfoToMoveStorage;
+import org.apache.hadoop.hdfs.server.protocol.BlockStorageMovementCommand.BlockInfoToMoveStorageBatch;
+import org.apache.hadoop.hdfs.server.protocol.StorageReport;
 import org.apache.hadoop.util.Daemon;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -58,9 +59,6 @@ public class StoragePolicySatisfier implements Runnable {
   private StorageMovementAttemptedItems storageMovementAttemptedItems;
 
   private BlockManager blockManager;
-
-  @VisibleForTesting
-  public List<BlockInfoToMoveStorage> storageMismatchedBlocks;
 
   public StoragePolicySatisfier(final Namesystem namesystem,
       final Configuration conf, BlockManager blkManager) {
@@ -90,10 +88,13 @@ public class StoragePolicySatisfier implements Runnable {
     while (namesystem.isRunning()) {
       try {
         Long id = unSatisfiedStoragePolicyFiles.get();
-        List<BlockInfoToMoveStorage> storageMismatchedBlocks = getStorageMismatchedBlocks(
-            id);
-        if (storageMismatchedBlocks != null) {
-          distributeBlockStorageMovementTasks(id, storageMismatchedBlocks);
+        List<BlockInfoToMoveStorage> blockInfoToMoveStorages =
+            new ArrayList<BlockInfoToMoveStorage>();
+        DatanodeDescriptor coordinatorNode = buildStorageMismatchedBlocks(id,
+            blockInfoToMoveStorages);
+        if (blockInfoToMoveStorages.size() > 0) {
+          distributeBlockStorageMovementTasks(coordinatorNode, id,
+              blockInfoToMoveStorages);
         }
         // Adding as attempted for movement
         storageMovementAttemptedItems.add(id);
@@ -114,24 +115,21 @@ public class StoragePolicySatisfier implements Runnable {
     }
   }
 
-  private void distributeBlockStorageMovementTasks(long trackID,
+  private void distributeBlockStorageMovementTasks(
+      DatanodeDescriptor coordinatorNode, long trackID,
       List<BlockInfoToMoveStorage> storageMismatchedBlocks) {
-    this.storageMismatchedBlocks = storageMismatchedBlocks;// TODO: this is just
-                                                           // for test
     if (storageMismatchedBlocks.size() < 1) {
-      return;// TODO: Major: handle this case. I think we need rerty num case to
-             // be integrated.
-      // Idea is, if some files are not getting storagemovement chances, then we
-      // can just retry limited number of times and exit.
+      // TODO: Major: handle this case. I think we need retry num case to
+      // be integrated. Idea is, if some files are not getting storage movement
+      // chances, then we can just retry limited number of times and exit.
+      return;
     }
-    DatanodeDescriptor coordinatorNode = storageMismatchedBlocks
-        .get(0).sourceNodes[0];
     coordinatorNode.addBlocksToMoveStorage(
         new BlockInfoToMoveStorageBatch(storageMismatchedBlocks, trackID));
   }
 
-  private List<BlockInfoToMoveStorage> getStorageMismatchedBlocks(
-      long inodeID) {
+  private DatanodeDescriptor buildStorageMismatchedBlocks(
+      long inodeID, List<BlockInfoToMoveStorage> blockInfoToMoveStorages) {
     BlockCollection blockCollection = namesystem.getBlockCollection(inodeID);
     if (blockCollection == null) {
       return null;
@@ -145,8 +143,10 @@ public class StoragePolicySatisfier implements Runnable {
       return null;
     }
 
+    // First datanode will be chosen as the co-ordinator. Later this can be
+    // optimzed if needed.
+    DatanodeDescriptor coordinatorNode = null;
     BlockInfo[] blocks = blockCollection.getBlocks();
-    List<BlockInfoToMoveStorage> blockInfoToMoveStorages = new ArrayList<BlockInfoToMoveStorage>();
     for (int i = 0; i < blocks.length; i++) {
       BlockInfo blockInfo = blocks[i];
       List<StorageType> newTypes = existingStoragePolicy
@@ -179,7 +179,8 @@ public class StoragePolicySatisfier implements Runnable {
         }
 
         BlockInfoToMoveStorage blkInfoToMoveStorage = new BlockInfoToMoveStorage();
-        blkInfoToMoveStorage.addBlock(blockInfo);
+        blkInfoToMoveStorage.addBlock(
+            new ExtendedBlock(blockManager.getBlockPoolId(), blockInfo));
         StorageTypeNodeMap locsForExpectedStorageTypes = getTargetLocsForExpectedStorageTypes(
             diff.expected);
 
@@ -187,11 +188,15 @@ public class StoragePolicySatisfier implements Runnable {
             blockInfo, diff.existing, sourceWithStorageMap, diff.expected,
             locsForExpectedStorageTypes);
         blkInfoToMoveStorage.addBlocksToMoveStorage(blockSourceTargetNodePairs);
-
+        if (coordinatorNode == null) {
+          // First datanode will be chosen as the co-ordinator. Later this can
+          // be optimzed if needed.
+          coordinatorNode = blockSourceTargetNodePairs.get(0).sourceNode;
+        }
         blockInfoToMoveStorages.add(blkInfoToMoveStorage);
       }
     }
-    return blockInfoToMoveStorages;
+    return coordinatorNode;
   }
 
   /**

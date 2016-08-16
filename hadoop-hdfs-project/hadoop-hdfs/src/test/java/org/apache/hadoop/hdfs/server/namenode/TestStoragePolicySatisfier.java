@@ -17,6 +17,8 @@
  */
 package org.apache.hadoop.hdfs.server.namenode;
 
+import java.io.IOException;
+
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FSDataOutputStream;
 import org.apache.hadoop.fs.Path;
@@ -24,14 +26,20 @@ import org.apache.hadoop.fs.StorageType;
 import org.apache.hadoop.hdfs.DistributedFileSystem;
 import org.apache.hadoop.hdfs.HdfsConfiguration;
 import org.apache.hadoop.hdfs.MiniDFSCluster;
-import org.apache.hadoop.hdfs.server.blockmanagement.DatanodeDescriptor;
-import org.apache.hadoop.hdfs.server.protocol.BlockStorageMovementCommand.BlockInfoToMoveStorage;
+import org.apache.hadoop.hdfs.protocol.LocatedBlock;
+import org.apache.hadoop.test.GenericTestUtils;
 import org.junit.Test;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import com.google.common.base.Supplier;
 
 public class TestStoragePolicySatisfier {
+  private static final Logger LOG = LoggerFactory
+      .getLogger(TestStoragePolicySatisfier.class);
   private FSNamesystem namesystem;
 
-  @Test(timeout = 300000000)
+  @Test(timeout = 300000)
   public void testMoveWhenStoragePolicyNotSatisfying() throws Exception {
     // HDFS-8147
     final Configuration conf = new HdfsConfiguration();
@@ -101,22 +109,38 @@ public class TestStoragePolicySatisfier {
 
       namesystem.getBlockManager().satisfyStoragePolicy(inode.getId());
 
-      Thread.sleep(100000);
-      System.out
-          .println(namesystem.getBlockManager().sps.storageMismatchedBlocks);
-      for (BlockInfoToMoveStorage blockInfoToMoveStorage : namesystem
-          .getBlockManager().sps.storageMismatchedBlocks) {
+      cluster.triggerHeartbeats();
 
-        System.out.println("Block: " + blockInfoToMoveStorage.getBlock());
-
-        DatanodeDescriptor[] sourceNodes = blockInfoToMoveStorage.sourceNodes;
-        for (int i = 0; i < sourceNodes.length; i++) {
-          System.out.println("Source Node=" + sourceNodes[i] + "  TargetNode="
-              + blockInfoToMoveStorage.targetNodes[i]);
-        }
-      }
+      // Wait till namenode notified about the block location details
+      waitForLocatedBlockWithArchiveStorageType(dfs, file, 3, 30000);
     } finally {
       cluster.shutdown();
     }
+  }
+
+  private void waitForLocatedBlockWithArchiveStorageType(
+      final DistributedFileSystem dfs, final String file,
+      int expectedArchiveCount, int timeout) throws Exception {
+    GenericTestUtils.waitFor(new Supplier<Boolean>() {
+      @Override
+      public Boolean get() {
+        LocatedBlock lb = null;
+        try {
+          lb = dfs.getClient().getLocatedBlocks(file, 0).get(0);
+        } catch (IOException e) {
+          LOG.error("Exception while getting located blocks", e);
+          return false;
+        }
+        int archiveCount = 0;
+        for (StorageType storageType : lb.getStorageTypes()) {
+          if (StorageType.ARCHIVE == storageType) {
+            archiveCount++;
+          }
+        }
+        LOG.info("Archive replica count, expected={} and actual={}",
+            expectedArchiveCount, archiveCount);
+        return expectedArchiveCount == archiveCount;
+      }
+    }, 100, timeout);
   }
 }

@@ -32,8 +32,8 @@ import org.apache.hadoop.hdfs.protocol.RollingUpgradeStatus;
 import org.apache.hadoop.hdfs.protocolPB.DatanodeProtocolClientSideTranslatorPB;
 import org.apache.hadoop.hdfs.server.protocol.*;
 import org.apache.hadoop.hdfs.server.protocol.BlockECReconstructionCommand.BlockECReconstructionInfo;
+import org.apache.hadoop.hdfs.server.protocol.BlockStorageMovementCommand.BlockInfoToMoveStorage;
 import org.apache.hadoop.hdfs.server.protocol.ReceivedDeletedBlockInfo.BlockStatus;
-import org.apache.hadoop.hdfs.server.protocol.StoragePolicySatisfyMovementCommand.BlockToMoveStoragePair;
 import org.slf4j.Logger;
 
 import java.io.IOException;
@@ -734,10 +734,12 @@ class BPOfferService {
       break;
     case DatanodeProtocol.DNA_STORAGE_POLICY_SATISFY_MOVEMENT:
       LOG.info("DatanodeCommand action: DNA_STORAGE_POLICY_SATISFY_MOVEMENT");
-      Collection<BlockToMoveStoragePair> blockToMoveStorageTasks =
-          ((StoragePolicySatisfyMovementCommand) cmd).getBlockToMoveStorageTasks();
-      dn.getStoragePolicySatisfyWorker()
-          .processBlockToMoveStorageTasks(blockToMoveStorageTasks);
+      BlockStorageMovementCommand blkStorageMovementCmd = (BlockStorageMovementCommand) cmd;
+      List<BlockInfoToMoveStorage> blockStorageMovementTasks = blkStorageMovementCmd
+          .getBlockStorageMovementTasks();
+      long trackID = blkStorageMovementCmd.getTrackID();
+      dn.getStoragePolicySatisfyWorker().processBlockToMoveStorageTasks(trackID,
+          blockStorageMovementTasks);
       break;
     default:
       LOG.warn("Unknown DatanodeCommand action: " + cmd.getAction());
