@@ -1,0 +1,473 @@
+ .../java/org/apache/hadoop/fs/StorageType.java     |   1 +
+ .../apache/hadoop/hdfs/protocol/HdfsConstants.java |   3 +
+ .../blockmanagement/BlockStoragePolicySuite.java   |  33 +++
+ .../hdfs/server/common/HdfsServerConstants.java    |   3 +
+ .../apache/hadoop/hdfs/TestBlockStoragePolicy.java | 280 +++++++++++++++++++--
+ 5 files changed, 302 insertions(+), 18 deletions(-)
+
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/fs/StorageType.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/fs/StorageType.java
+index 0948801..4e52e61 100644
+--- a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/fs/StorageType.java
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/fs/StorageType.java
+@@ -35,6 +35,7 @@
+ public enum StorageType {
+   // sorted by the speed of the storage types, from fast to slow
+   RAM_DISK(true),
++  NVM_DISK(false),
+   SSD(false),
+   DISK(false),
+   ARCHIVE(false);
+diff --git a/hadoop-hdfs-project/hadoop-hdfs-client/src/main/java/org/apache/hadoop/hdfs/protocol/HdfsConstants.java b/hadoop-hdfs-project/hadoop-hdfs-client/src/main/java/org/apache/hadoop/hdfs/protocol/HdfsConstants.java
+index 443576d..700e3ae 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs-client/src/main/java/org/apache/hadoop/hdfs/protocol/HdfsConstants.java
++++ b/hadoop-hdfs-project/hadoop-hdfs-client/src/main/java/org/apache/hadoop/hdfs/protocol/HdfsConstants.java
+@@ -35,6 +35,9 @@
+    */
+   public static final String HDFS_URI_SCHEME = "hdfs";
+   public static final String MEMORY_STORAGE_POLICY_NAME = "LAZY_PERSIST";
++  public static final String ALLNVM_STORAGE_POLICY_NAME = "ALL_NVM";
++  public static final String ONENVM_SSD_DISK_STORAGE_POLICY_NAME = "ONE_NVM_SSD_DISK";
++  public static final String ONENVM_DISK_STORAGE_POLICY_NAME = "ONE_NVM_DISK";
+   public static final String ALLSSD_STORAGE_POLICY_NAME = "ALL_SSD";
+   public static final String ONESSD_STORAGE_POLICY_NAME = "ONE_SSD";
+   public static final String HOT_STORAGE_POLICY_NAME = "HOT";
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/blockmanagement/BlockStoragePolicySuite.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/blockmanagement/BlockStoragePolicySuite.java
+index 7e6c2b2..ec795da 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/blockmanagement/BlockStoragePolicySuite.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/blockmanagement/BlockStoragePolicySuite.java
+@@ -55,6 +55,39 @@ public static BlockStoragePolicySuite createDefaultSuite() {
+         new StorageType[]{StorageType.DISK},
+         new StorageType[]{StorageType.DISK},
+         true);    // Cannot be changed on regular files, but inherited.
++    /*
++     * Store all replicas on NVM_DISK. SSD and DISK will be fallbacks. 
++     */
++    final byte allNvmId = HdfsServerConstants.ALLNVM_STORAGE_POLICY_ID;
++    policies[allNvmId] = new BlockStoragePolicy(allNvmId,
++        HdfsConstants.ALLNVM_STORAGE_POLICY_NAME,
++        new StorageType[] { StorageType.NVM_DISK },
++        new StorageType[] { StorageType.SSD, StorageType.DISK },
++        new StorageType[] { StorageType.SSD, StorageType.DISK });
++    /*
++     * Store first on NVM_DISK, second on SSD and remaining on DISK. SSD and
++     * DISK will be fallbacks.
++     */
++    final byte oneNvmSsdDiskId =
++        HdfsServerConstants.ONENVM_SSD_DISK_STORAGE_POLICY_ID;
++    policies[oneNvmSsdDiskId] = new BlockStoragePolicy(oneNvmSsdDiskId,
++        HdfsConstants.ONENVM_SSD_DISK_STORAGE_POLICY_NAME,
++        new StorageType[] {
++            StorageType.NVM_DISK, StorageType.SSD, StorageType.DISK },
++        new StorageType[] { StorageType.SSD, StorageType.DISK },
++        new StorageType[] { StorageType.SSD, StorageType.DISK });
++    /*
++     * Store first on NVM_DISK, remaining on DISK. SSD will be fallback if
++     * either of type unavailable.
++     */
++    final byte oneNvmDiskId =
++        HdfsServerConstants.ONENVM_DISK_STORAGE_POLICY_ID;
++    policies[oneNvmDiskId] = new BlockStoragePolicy(oneNvmDiskId,
++        HdfsConstants.ONENVM_DISK_STORAGE_POLICY_NAME,
++        new StorageType[] { StorageType.NVM_DISK, StorageType.DISK },
++        new StorageType[] { StorageType.SSD, StorageType.DISK },
++        new StorageType[] { StorageType.DISK });
++
+     final byte allssdId = HdfsServerConstants.ALLSSD_STORAGE_POLICY_ID;
+     policies[allssdId] = new BlockStoragePolicy(allssdId,
+         HdfsConstants.ALLSSD_STORAGE_POLICY_NAME,
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/common/HdfsServerConstants.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/common/HdfsServerConstants.java
+index 11194dc..280b792 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/common/HdfsServerConstants.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/common/HdfsServerConstants.java
+@@ -100,7 +100,10 @@
+   byte[] DOT_SNAPSHOT_DIR_BYTES
+               = DFSUtil.string2Bytes(HdfsConstants.DOT_SNAPSHOT_DIR);
+   byte MEMORY_STORAGE_POLICY_ID = 15;
++  byte ALLNVM_STORAGE_POLICY_ID = 14;
++  byte ONENVM_SSD_DISK_STORAGE_POLICY_ID = 13;
+   byte ALLSSD_STORAGE_POLICY_ID = 12;
++  byte ONENVM_DISK_STORAGE_POLICY_ID = 11;
+   byte ONESSD_STORAGE_POLICY_ID = 10;
+   byte HOT_STORAGE_POLICY_ID = 7;
+   byte WARM_STORAGE_POLICY_ID = 5;
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestBlockStoragePolicy.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestBlockStoragePolicy.java
+index 78e1e58..fae6fa7 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestBlockStoragePolicy.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestBlockStoragePolicy.java
+@@ -67,7 +67,11 @@
+   static final EnumSet<StorageType> none = EnumSet.noneOf(StorageType.class);
+   static final EnumSet<StorageType> archive = EnumSet.of(StorageType.ARCHIVE);
+   static final EnumSet<StorageType> disk = EnumSet.of(StorageType.DISK);
+-  static final EnumSet<StorageType> both = EnumSet.of(StorageType.DISK, StorageType.ARCHIVE);
++  static final EnumSet<StorageType> ssd = EnumSet.of(StorageType.SSD);
++  static final EnumSet<StorageType> disk_archive = EnumSet.of(StorageType.DISK,
++      StorageType.ARCHIVE);
++  static final EnumSet<StorageType> all = EnumSet.of(StorageType.SSD,
++      StorageType.DISK, StorageType.ARCHIVE);
+ 
+   static final long FILE_LEN = 1024;
+   static final short REPLICATION = 3;
+@@ -77,6 +81,11 @@
+   static final byte HOT  = HdfsServerConstants.HOT_STORAGE_POLICY_ID;
+   static final byte ONESSD  = HdfsServerConstants.ONESSD_STORAGE_POLICY_ID;
+   static final byte ALLSSD  = HdfsServerConstants.ALLSSD_STORAGE_POLICY_ID;
++  static final byte ONENVM_DISK =
++      HdfsServerConstants.ONENVM_DISK_STORAGE_POLICY_ID;
++  static final byte ONENVM_SSD_DISK =
++      HdfsServerConstants.ONENVM_SSD_DISK_STORAGE_POLICY_ID;
++  static final byte ALLNVM = HdfsServerConstants.ALLNVM_STORAGE_POLICY_ID;
+   static final byte LAZY_PERSIST  = HdfsServerConstants.MEMORY_STORAGE_POLICY_ID;
+ 
+   @Test (timeout=300000)
+@@ -137,6 +146,18 @@ public void testDefaultPolicies() {
+     expectedPolicyStrings.put(ALLSSD, "BlockStoragePolicy{ALL_SSD:" + ALLSSD +
+         ", storageTypes=[SSD], creationFallbacks=[DISK], " +
+         "replicationFallbacks=[DISK]}");
++    expectedPolicyStrings.put(ONENVM_DISK, "BlockStoragePolicy{"
++        + "ONE_NVM_DISK:" + ONENVM_DISK
++        + ", storageTypes=[NVM_DISK, DISK], creationFallbacks=[SSD, DISK], "
++        + "replicationFallbacks=[DISK]}");
++    expectedPolicyStrings.put(ONENVM_SSD_DISK, "BlockStoragePolicy{"
++        + "ONE_NVM_SSD_DISK:" + ONENVM_SSD_DISK
++        + ", storageTypes=[NVM_DISK, SSD, DISK], "
++        + "creationFallbacks=[SSD, DISK], "
++        + "replicationFallbacks=[SSD, DISK]}");
++    expectedPolicyStrings.put(ALLNVM, "BlockStoragePolicy{ALL_NVM:" + ALLNVM
++        + ", storageTypes=[NVM_DISK], creationFallbacks=[SSD, DISK], "
++        + "replicationFallbacks=[SSD, DISK]}");
+ 
+     for(byte i = 1; i < 16; i++) {
+       final BlockStoragePolicy policy = POLICY_SUITE.getPolicy(i); 
+@@ -153,8 +174,8 @@ public void testDefaultPolicies() {
+         final List<StorageType> computed = cold.chooseStorageTypes(replication);
+         assertStorageType(computed, replication, StorageType.ARCHIVE);
+       }
+-      assertCreationFallback(cold, null, null, null);
+-      assertReplicationFallback(cold, null, null, null);
++      assertCreationFallback(cold, null, null, null, null, null);
++      assertReplicationFallback(cold, null, null, null, null);
+     }
+     
+     { // check Warm policy
+@@ -163,8 +184,10 @@ public void testDefaultPolicies() {
+         final List<StorageType> computed = warm.chooseStorageTypes(replication);
+         assertStorageType(computed, replication, StorageType.DISK, StorageType.ARCHIVE);
+       }
+-      assertCreationFallback(warm, StorageType.DISK, StorageType.DISK, StorageType.ARCHIVE);
+-      assertReplicationFallback(warm, StorageType.DISK, StorageType.DISK, StorageType.ARCHIVE);
++      assertCreationFallback(warm, StorageType.DISK, StorageType.DISK,
++          StorageType.ARCHIVE, StorageType.DISK, null);
++      assertReplicationFallback(warm, StorageType.DISK, StorageType.DISK,
++          StorageType.ARCHIVE, StorageType.DISK);
+     }
+ 
+     { // check Hot policy
+@@ -173,8 +196,94 @@ public void testDefaultPolicies() {
+         final List<StorageType> computed = hot.chooseStorageTypes(replication);
+         assertStorageType(computed, replication, StorageType.DISK);
+       }
+-      assertCreationFallback(hot, null, null, null);
+-      assertReplicationFallback(hot, StorageType.ARCHIVE, null, StorageType.ARCHIVE);
++      assertCreationFallback(hot, null, null, null, null, null);
++      assertReplicationFallback(hot, StorageType.ARCHIVE, null,
++          StorageType.ARCHIVE, StorageType.ARCHIVE);
++    }
++
++    { // check ONE_SSD policy
++      final BlockStoragePolicy onessd = POLICY_SUITE.getPolicy(ONESSD);
++      for (short replication = 1; replication < 6; replication++) {
++        final List<StorageType> computed = onessd
++            .chooseStorageTypes(replication);
++        assertStorageType(computed, replication, StorageType.SSD,
++            StorageType.DISK);
++      }
++      assertCreationFallback(onessd, StorageType.SSD, StorageType.SSD,
++          StorageType.SSD, StorageType.DISK, StorageType.SSD);
++      assertReplicationFallback(onessd, StorageType.SSD, StorageType.SSD,
++          StorageType.SSD, StorageType.DISK);
++    }
++
++    { // check ALL_SSD policy
++      final BlockStoragePolicy allssd = POLICY_SUITE.getPolicy(ALLSSD);
++      for (short replication = 1; replication < 6; replication++) {
++        final List<StorageType> computed = allssd
++            .chooseStorageTypes(replication);
++        assertStorageType(computed, replication, StorageType.SSD);
++      }
++      assertCreationFallback(allssd, StorageType.DISK, StorageType.DISK, null,
++          StorageType.DISK, null);
++      assertReplicationFallback(allssd, StorageType.DISK, StorageType.DISK,
++          null, StorageType.DISK);
++    }
++
++    { // check ONENVM_DISK policy
++      final BlockStoragePolicy oneNvmDisk = POLICY_SUITE
++          .getPolicy(ONENVM_DISK);
++      for (short replication = 1; replication < 6; replication++) {
++        final List<StorageType> computed = oneNvmDisk
++            .chooseStorageTypes(replication);
++        assertStorageType(computed, replication, StorageType.NVM_DISK,
++            StorageType.DISK);
++      }
++      assertCreationFallback(oneNvmDisk, StorageType.SSD, StorageType.SSD,
++          StorageType.SSD, StorageType.DISK, StorageType.SSD);
++      assertReplicationFallback(oneNvmDisk, StorageType.DISK,
++          StorageType.DISK, null, StorageType.DISK);
++    }
++
++    { // check ONENVM_SSD_DISK policy
++      final BlockStoragePolicy oneNvmSsdDisk = POLICY_SUITE
++          .getPolicy(ONENVM_SSD_DISK);
++      for (short replication = 1; replication < 6; replication++) {
++        final List<StorageType> computed = oneNvmSsdDisk
++            .chooseStorageTypes(replication);
++        assertStorageType(computed, replication, StorageType.NVM_DISK,
++            StorageType.SSD, StorageType.DISK);
++      }
++      assertCreationFallback(oneNvmSsdDisk, StorageType.SSD, StorageType.SSD,
++          StorageType.SSD, StorageType.DISK, StorageType.SSD);
++      assertReplicationFallback(oneNvmSsdDisk, StorageType.SSD,
++          StorageType.SSD, StorageType.SSD, StorageType.DISK);
++    }
++
++    { // check ALL_NVM policy
++      final BlockStoragePolicy allNvm = POLICY_SUITE
++          .getPolicy(ALLNVM);
++      for (short replication = 1; replication < 6; replication++) {
++        final List<StorageType> computed = allNvm
++            .chooseStorageTypes(replication);
++        assertStorageType(computed, replication, StorageType.NVM_DISK);
++      }
++      assertCreationFallback(allNvm, StorageType.SSD, StorageType.SSD,
++          StorageType.SSD, StorageType.DISK, StorageType.SSD);
++      assertReplicationFallback(allNvm, StorageType.SSD,
++          StorageType.SSD, StorageType.SSD, StorageType.DISK);
++    }
++
++    { // check LAZY_PERSIST policy
++      final BlockStoragePolicy lazyPersist = POLICY_SUITE
++          .getPolicy(LAZY_PERSIST);
++      for (short replication = 1; replication < 6; replication++) {
++        final List<StorageType> computed = lazyPersist
++            .chooseStorageTypes(replication);
++        assertStorageType(computed, replication, StorageType.DISK);
++      }
++      assertCreationFallback(lazyPersist, StorageType.DISK, StorageType.DISK,
++          null, StorageType.DISK, null);
++      assertReplicationFallback(lazyPersist, StorageType.DISK,
++          StorageType.DISK, null, StorageType.DISK);
+     }
+   }
+ 
+@@ -199,20 +308,28 @@ static void assertStorageType(List<StorageType> computed, short replication,
+     }
+   }
+ 
+-  static void assertCreationFallback(BlockStoragePolicy policy, StorageType noneExpected,
+-      StorageType archiveExpected, StorageType diskExpected) {
++  static void assertCreationFallback(BlockStoragePolicy policy,
++      StorageType noneExpected, StorageType archiveExpected,
++      StorageType diskExpected, StorageType ssdExpected,
++      StorageType disk_archiveExpected) {
+     Assert.assertEquals(noneExpected, policy.getCreationFallback(none));
+     Assert.assertEquals(archiveExpected, policy.getCreationFallback(archive));
+     Assert.assertEquals(diskExpected, policy.getCreationFallback(disk));
+-    Assert.assertEquals(null, policy.getCreationFallback(both));
++    Assert.assertEquals(ssdExpected, policy.getCreationFallback(ssd));
++    Assert.assertEquals(disk_archiveExpected,
++        policy.getCreationFallback(disk_archive));
++    Assert.assertEquals(null, policy.getCreationFallback(all));
+   }
+ 
+-  static void assertReplicationFallback(BlockStoragePolicy policy, StorageType noneExpected,
+-      StorageType archiveExpected, StorageType diskExpected) {
++  static void assertReplicationFallback(BlockStoragePolicy policy,
++      StorageType noneExpected, StorageType archiveExpected,
++      StorageType diskExpected, StorageType ssdExpected) {
+     Assert.assertEquals(noneExpected, policy.getReplicationFallback(none));
+-    Assert.assertEquals(archiveExpected, policy.getReplicationFallback(archive));
++    Assert
++        .assertEquals(archiveExpected, policy.getReplicationFallback(archive));
+     Assert.assertEquals(diskExpected, policy.getReplicationFallback(disk));
+-    Assert.assertEquals(null, policy.getReplicationFallback(both));
++    Assert.assertEquals(ssdExpected, policy.getReplicationFallback(ssd));
++    Assert.assertEquals(null, policy.getReplicationFallback(all));
+   }
+ 
+   private static interface CheckChooseStorageTypes {
+@@ -260,7 +377,7 @@ public void checkChooseStorageTypes(BlockStoragePolicy p,
+       public void checkChooseStorageTypes(BlockStoragePolicy p,
+           short replication, List<StorageType> chosen, StorageType... expected) {
+         final List<StorageType> types = p.chooseStorageTypes(replication,
+-            chosen, both, true);
++            chosen, disk_archive, true);
+         assertStorageTypes(types, expected);
+       }
+     };
+@@ -272,7 +389,7 @@ public void checkChooseStorageTypes(BlockStoragePolicy p,
+       public void checkChooseStorageTypes(BlockStoragePolicy p,
+           short replication, List<StorageType> chosen, StorageType... expected) {
+         final List<StorageType> types = p.chooseStorageTypes(replication,
+-            chosen, both, false);
++            chosen, disk_archive, false);
+         assertStorageTypes(types, expected);
+       }
+     };
+@@ -448,12 +565,19 @@ public void testChooseStorageTypesWithDiskUnavailableAndNewBlock() {
+     final BlockStoragePolicy hot = POLICY_SUITE.getPolicy(HOT);
+     final BlockStoragePolicy warm = POLICY_SUITE.getPolicy(WARM);
+     final BlockStoragePolicy cold = POLICY_SUITE.getPolicy(COLD);
++    final BlockStoragePolicy oneNvmSsdDisk = POLICY_SUITE
++        .getPolicy(ONENVM_SSD_DISK);
++    final BlockStoragePolicy oneSsd = POLICY_SUITE.getPolicy(ONESSD);
+ 
+     final short replication = 3;
+     final EnumSet<StorageType> unavailables = disk;
+     final boolean isNewBlock = true;
+     {
+       final List<StorageType> chosen = Lists.newArrayList();
++      checkChooseStorageTypes(oneNvmSsdDisk, replication, chosen, unavailables,
++          isNewBlock, StorageType.NVM_DISK, StorageType.SSD, StorageType.SSD);
++      checkChooseStorageTypes(oneSsd, replication, chosen, unavailables,
++          isNewBlock, StorageType.SSD, StorageType.SSD, StorageType.SSD);
+       checkChooseStorageTypes(hot, replication, chosen, unavailables, isNewBlock);
+       checkChooseStorageTypes(warm, replication, chosen, unavailables, isNewBlock,
+           StorageType.ARCHIVE, StorageType.ARCHIVE, StorageType.ARCHIVE);
+@@ -462,7 +586,9 @@ public void testChooseStorageTypesWithDiskUnavailableAndNewBlock() {
+     }
+ 
+     {
+-      final List<StorageType> chosen = Arrays.asList(StorageType.DISK); 
++      final List<StorageType> chosen = Arrays.asList(StorageType.DISK);
++      checkChooseStorageTypes(oneNvmSsdDisk, replication, chosen, unavailables,
++          isNewBlock, StorageType.NVM_DISK, StorageType.SSD);
+       checkChooseStorageTypes(hot, replication, chosen, unavailables, isNewBlock);
+       checkChooseStorageTypes(warm, replication, chosen, unavailables, isNewBlock,
+           StorageType.ARCHIVE, StorageType.ARCHIVE);
+@@ -471,7 +597,125 @@ public void testChooseStorageTypesWithDiskUnavailableAndNewBlock() {
+     }
+ 
+     {
+-      final List<StorageType> chosen = Arrays.asList(StorageType.ARCHIVE); 
++      final List<StorageType> chosen = Arrays.asList(StorageType.ARCHIVE);
++      checkChooseStorageTypes(oneNvmSsdDisk, replication, chosen, unavailables,
++          isNewBlock, StorageType.NVM_DISK, StorageType.SSD, StorageType.SSD);
++      checkChooseStorageTypes(hot, replication, chosen, unavailables, isNewBlock);
++      checkChooseStorageTypes(warm, replication, chosen, unavailables, isNewBlock,
++          StorageType.ARCHIVE, StorageType.ARCHIVE);
++      checkChooseStorageTypes(cold, replication, chosen, unavailables, isNewBlock,
++          StorageType.ARCHIVE, StorageType.ARCHIVE);
++    }
++
++    {
++      final List<StorageType> chosen = Arrays.asList(
++          StorageType.DISK, StorageType.DISK); 
++      checkChooseStorageTypes(hot, replication, chosen, unavailables, isNewBlock);
++      checkChooseStorageTypes(warm, replication, chosen, unavailables, isNewBlock,
++          StorageType.ARCHIVE, StorageType.ARCHIVE);
++      checkChooseStorageTypes(cold, replication, chosen, unavailables, isNewBlock,
++          StorageType.ARCHIVE, StorageType.ARCHIVE, StorageType.ARCHIVE);
++    }
++
++    {
++      final List<StorageType> chosen = Arrays.asList(
++          StorageType.DISK, StorageType.ARCHIVE); 
++      checkChooseStorageTypes(hot, replication, chosen, unavailables, isNewBlock);
++      checkChooseStorageTypes(warm, replication, chosen, unavailables, isNewBlock,
++          StorageType.ARCHIVE);
++      checkChooseStorageTypes(cold, replication, chosen, unavailables, isNewBlock,
++          StorageType.ARCHIVE, StorageType.ARCHIVE);
++    }
++
++    {
++      final List<StorageType> chosen = Arrays.asList(
++          StorageType.ARCHIVE, StorageType.ARCHIVE); 
++      checkChooseStorageTypes(hot, replication, chosen, unavailables, isNewBlock);
++      checkChooseStorageTypes(warm, replication, chosen, unavailables, isNewBlock,
++          StorageType.ARCHIVE);
++      checkChooseStorageTypes(cold, replication, chosen, unavailables, isNewBlock,
++          StorageType.ARCHIVE);
++    }
++
++    {
++      final List<StorageType> chosen = Arrays.asList(
++          StorageType.DISK, StorageType.DISK, StorageType.DISK); 
++      checkChooseStorageTypes(hot, replication, chosen, unavailables, isNewBlock);
++      checkChooseStorageTypes(warm, replication, chosen, unavailables, isNewBlock,
++          StorageType.ARCHIVE, StorageType.ARCHIVE);
++      checkChooseStorageTypes(cold, replication, chosen, unavailables, isNewBlock,
++          StorageType.ARCHIVE, StorageType.ARCHIVE, StorageType.ARCHIVE);
++    }
++
++    {
++      final List<StorageType> chosen = Arrays.asList(
++          StorageType.DISK, StorageType.DISK, StorageType.ARCHIVE); 
++      checkChooseStorageTypes(hot, replication, chosen, unavailables, isNewBlock);
++      checkChooseStorageTypes(warm, replication, chosen, unavailables, isNewBlock,
++          StorageType.ARCHIVE);
++      checkChooseStorageTypes(cold, replication, chosen, unavailables, isNewBlock,
++          StorageType.ARCHIVE, StorageType.ARCHIVE);
++    }
++
++    {
++      final List<StorageType> chosen = Arrays.asList(
++          StorageType.DISK, StorageType.ARCHIVE, StorageType.ARCHIVE); 
++      checkChooseStorageTypes(hot, replication, chosen, unavailables, isNewBlock);
++      checkChooseStorageTypes(warm, replication, chosen, unavailables, isNewBlock);
++      checkChooseStorageTypes(cold, replication, chosen, unavailables, isNewBlock,
++          StorageType.ARCHIVE);
++    }
++
++    {
++      final List<StorageType> chosen = Arrays.asList(
++          StorageType.ARCHIVE, StorageType.ARCHIVE, StorageType.ARCHIVE); 
++      checkChooseStorageTypes(hot, replication, chosen, unavailables, isNewBlock);
++      checkChooseStorageTypes(warm, replication, chosen, unavailables, isNewBlock);
++      checkChooseStorageTypes(cold, replication, chosen, unavailables, isNewBlock);
++    }
++  }
++
++  @Test
++  public void testChooseStorageTypesWithNVMUnavailableAndNewBlock()
++      throws Exception {
++    final BlockStoragePolicy hot = POLICY_SUITE.getPolicy(HOT);
++    final BlockStoragePolicy warm = POLICY_SUITE.getPolicy(WARM);
++    final BlockStoragePolicy cold = POLICY_SUITE.getPolicy(COLD);
++    final BlockStoragePolicy oneNvmSsdDisk = POLICY_SUITE
++        .getPolicy(ONENVM_SSD_DISK);
++    final BlockStoragePolicy oneSsd = POLICY_SUITE.getPolicy(ONESSD);
++
++    final short replication = 3;
++    final EnumSet<StorageType> unavailables = EnumSet.of(StorageType.NVM_DISK);
++    final boolean isNewBlock = true;
++    {
++      final List<StorageType> chosen = Lists.newArrayList();
++      checkChooseStorageTypes(oneNvmSsdDisk, replication, chosen, unavailables,
++          isNewBlock, StorageType.NVM_DISK, StorageType.SSD, StorageType.SSD);
++      checkChooseStorageTypes(oneSsd, replication, chosen, unavailables,
++          isNewBlock, StorageType.SSD, StorageType.SSD, StorageType.SSD);
++      checkChooseStorageTypes(hot, replication, chosen, unavailables, isNewBlock);
++      checkChooseStorageTypes(warm, replication, chosen, unavailables, isNewBlock,
++          StorageType.ARCHIVE, StorageType.ARCHIVE, StorageType.ARCHIVE);
++      checkChooseStorageTypes(cold, replication, chosen, unavailables, isNewBlock,
++          StorageType.ARCHIVE, StorageType.ARCHIVE, StorageType.ARCHIVE);
++    }
++
++    {
++      final List<StorageType> chosen = Arrays.asList(StorageType.DISK);
++      checkChooseStorageTypes(oneNvmSsdDisk, replication, chosen, unavailables,
++          isNewBlock, StorageType.NVM_DISK, StorageType.SSD);
++      checkChooseStorageTypes(hot, replication, chosen, unavailables, isNewBlock);
++      checkChooseStorageTypes(warm, replication, chosen, unavailables, isNewBlock,
++          StorageType.ARCHIVE, StorageType.ARCHIVE);
++      checkChooseStorageTypes(cold, replication, chosen, unavailables, isNewBlock,
++          StorageType.ARCHIVE, StorageType.ARCHIVE, StorageType.ARCHIVE);
++    }
++
++    {
++      final List<StorageType> chosen = Arrays.asList(StorageType.ARCHIVE);
++      checkChooseStorageTypes(oneNvmSsdDisk, replication, chosen, unavailables,
++          isNewBlock, StorageType.NVM_DISK, StorageType.SSD, StorageType.SSD);
+       checkChooseStorageTypes(hot, replication, chosen, unavailables, isNewBlock);
+       checkChooseStorageTypes(warm, replication, chosen, unavailables, isNewBlock,
+           StorageType.ARCHIVE, StorageType.ARCHIVE);
